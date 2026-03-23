@@ -1,0 +1,17 @@
+apiVersion: skaffold/v3
+kind: Config
+metadata:
+  name: netstatd
+
+deploy:
+  kubectl: {}
+  kubeContext: ee-lte-1.codemowers.io
+
+manifests:
+  rawYaml:
+    - deployment.yaml
+
+# kubectl create secret docker-registry imgcred --docker-server=https://git.codemowers.io --docker-username=__token__ --docker-password=...
+build:
+  artifacts:
+    - image: git.codemowers.io/laurivosandi/netstatd

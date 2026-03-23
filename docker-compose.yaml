@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  netstatd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: netstatd:latest
+    container_name: netstatd
+    network_mode: host
+    privileged: true
+    pid: host
+    volumes:
+      - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
+      - /proc:/host/proc:ro
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+    restart: unless-stopped
+    #command: ["./netstatd", "-log-level", "info", "-disable-udp"]
+    #command: ["./netstatd", "-log-level", "info", "-disable-tcp"]

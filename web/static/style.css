@@ -1,0 +1,511 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Courier New", monospace;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  padding: 20px;
+  font-size: 13px;
+}
+
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #3e3e3e;
+}
+
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+}
+
+.nav-links {
+  display: flex;
+  gap: 20px;
+}
+
+.nav-link {
+  color: #d4d4d4;
+  text-decoration: none;
+  padding: 5px 10px;
+  border-radius: 3px;
+  transition: background-color 0.2s;
+}
+
+.nav-link:hover {
+  background-color: #2d2d2d;
+}
+
+.nav-link.active {
+  background-color: #4ec9b0;
+  color: #1e1e1e;
+}
+
+h1 {
+  font-size: 18px;
+  color: #4ec9b0;
+  margin: 0;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.status .event-count {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid #3e3e3e;
+  color: #666;
+}
+
+.status .event-count strong {
+  color: #4ec9b0;
+}
+
+.status-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #666;
+}
+
+.status-indicator.connected {
+  background-color: #4ec9b0;
+  box-shadow: 0 0 5px #4ec9b0;
+}
+
+.status-indicator.disconnected {
+  background-color: #f48771;
+}
+
+.filters {
+  margin-bottom: 15px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.filters input,
+.filters select,
+.filters button,
+.ips-filters input,
+.ips-filters select {
+  background-color: #2d2d2d;
+  border: 1px solid #3e3e3e;
+  color: #d4d4d4;
+  padding: 5px 10px;
+  border-radius: 3px;
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+  cursor: pointer;
+  height: 30px;
+  box-sizing: border-box;
+}
+
+.filters input[type="number"] {
+  width: 100px;
+}
+
+.filters select#filterIPFamily,
+.ips-filters select#filterIPFamilyIPs {
+  width: 120px;
+}
+
+.filters label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  height: 30px;
+}
+
+.filters input[type="checkbox"] {
+  width: auto;
+  cursor: pointer;
+  margin: 0;
+}
+
+.filters input:focus,
+.filters select:focus,
+.filters button:focus,
+.ips-filters input:focus,
+.ips-filters select:focus {
+  outline: none;
+  border-color: #4ec9b0;
+}
+
+.filters button:hover {
+  background-color: #3e3e3e;
+}
+
+.filters button.connected {
+  background-color: #1a3a1a;
+  border-color: #4ec9b0;
+}
+
+.filters button.disconnected {
+  background-color: #3a1a1a;
+  border-color: #f48771;
+}
+
+.stats {
+  margin-bottom: 15px;
+  padding: 10px;
+  background-color: #2d2d2d;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.connections-container {
+  background-color: #252526;
+  border: 1px solid #3e3e3e;
+  border-radius: 3px;
+  overflow: auto;
+  max-height: calc(100vh - 280px);
+}
+
+/* Styles for deployment view */
+#deploymentView .connections-container {
+  padding: 0;
+  overflow-y: auto;
+}
+
+#deploymentView .deployment-content {
+  margin: 0;
+  padding: 20px;
+  background-color: #1e1e1e;
+  border: none;
+  border-radius: 0;
+  overflow-x: auto;
+}
+
+#deploymentView h2 {
+  color: #4ec9b0;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #3e3e3e;
+  padding-bottom: 10px;
+}
+
+#deploymentView h3 {
+  color: #9cdcfe;
+  margin: 15px 0 10px 0;
+}
+
+#deploymentView p {
+  margin-bottom: 15px;
+  line-height: 1.5;
+}
+
+#deploymentView pre {
+  background-color: #1e1e1e;
+  border: 1px solid #3e3e3e;
+  border-radius: 3px;
+  padding: 15px;
+  overflow-x: auto;
+  margin: 15px 0;
+}
+
+#deploymentView code {
+  color: #ce9178;
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+}
+
+#deploymentView .section {
+  margin-bottom: 30px;
+}
+
+/* Keep some color classes for table cells */
+.ip-address {
+  color: #9cdcfe;
+  font-family: "Courier New", monospace;
+}
+
+.ip-type {
+  color: #4ec9b0;
+  font-weight: bold;
+}
+
+.ip-pod {
+  color: #dcdcaa;
+}
+
+.ip-namespace {
+  color: #ce9178;
+}
+
+.ip-node {
+  color: #b5cea8;
+}
+
+.ip-hostname {
+  color: #c586c0;
+}
+
+.netns {
+  color: #808080;
+  font-size: 11px;
+  font-family: "Courier New", monospace;
+}
+
+.pid {
+  color: #b5cea8;
+  font-size: 11px;
+  font-family: "Courier New", monospace;
+}
+
+.container-name {
+  color: #dcdcaa;
+  font-size: 11px;
+  font-family: "Courier New", monospace;
+}
+
+.cgroup-slice {
+  color: #888888;
+  font-size: 10px;
+  font-family: "Courier New", monospace;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connections-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.connections-table thead {
+  position: sticky;
+  top: 0;
+  background-color: #2d2d2d;
+  z-index: 10;
+}
+
+.connections-table th {
+  padding: 8px 10px;
+  font-weight: bold;
+  border-bottom: 1px solid #3e3e3e;
+  text-align: left;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.connections-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #2d2d2d;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.connections-table tbody tr {
+  transition: background-color 0.2s;
+}
+
+.connections-table tbody tr:hover {
+  background-color: #2d2d2d;
+}
+
+.connections-table {
+  table-layout: auto;
+  width: 100%;
+}
+
+.connections-table th.proto,
+.connections-table td.proto {
+  width: 5em;
+  min-width: 5em;
+  max-width: 5em;
+}
+
+.connections-table th.state,
+.connections-table td.state {
+  width: 8em;
+  min-width: 8em;
+  max-width: 8em;
+}
+
+.connections-table th.port,
+.connections-table td.port {
+  width: 6em;
+  min-width: 6em;
+  max-width: 6em;
+}
+
+.connections-table th.node,
+.connections-table td.node {
+  width: 8em;
+  min-width: 8em;
+  max-width: 8em;
+}
+
+/* Make local address and remote address columns flexible */
+.connections-table th:nth-child(3), /* Local Address */
+.connections-table td:nth-child(3) {
+  min-width: 20%;
+  max-width: none;
+  width: auto;
+}
+
+.connections-table th:nth-child(5), /* Peer Address */
+.connections-table td:nth-child(5) {
+  min-width: 20%;
+  max-width: none;
+  width: auto;
+}
+
+.connections-table tbody tr.new {
+  background-color: #1a3a1a;
+  animation: fadeIn 0.5s;
+}
+
+.connections-table tbody tr.destroyed {
+  background-color: #3a1a1a;
+}
+
+@keyframes fadeIn {
+  from {
+    background-color: #2d4a2d;
+  }
+  to {
+    background-color: #252526;
+  }
+}
+
+@keyframes fadeOut {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.connections-table tbody tr.destroyed {
+  animation: fadeOut 10s linear forwards;
+}
+
+.protocol {
+  color: #4ec9b0;
+  font-weight: bold;
+}
+
+.state {
+  color: #ce9178;
+}
+
+.address {
+  color: #9cdcfe;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+}
+
+.address-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.address-circle {
+  font-size: 14px;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  line-height: 1;
+}
+
+.port {
+  color: #b5cea8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 6em;
+}
+
+.container-info {
+  color: #dcdcaa;
+  font-size: 11px;
+}
+
+.pod-ip {
+  color: #569cd6;
+  font-size: 11px;
+}
+
+.node-name {
+  color: #ce9178;
+  font-size: 11px;
+}
+
+.executable {
+  color: #dcdcaa;
+  font-size: 11px;
+  font-family: "Courier New", monospace;
+}
+
+.empty-state {
+  padding: 40px;
+  text-align: center;
+  color: #666;
+}
+
+.footer-disclaimer {
+  margin-top: 2rem;
+  padding: 1rem;
+  border-top: 1px solid #3e3e3e;
+  text-align: center;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.footer-disclaimer a {
+  color: #4ec9b0;
+  text-decoration: none;
+}
+
+.footer-disclaimer a:hover {
+  text-decoration: underline;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3e3e3e;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4e4e4e;
+}

@@ -1,0 +1,122 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netstatd-headless
+  namespace: kube-system
+  labels:
+    app: netstatd
+spec:
+  clusterIP: None
+  selector:
+    app: netstatd
+  ports:
+    - name: http
+      port: 5280
+      targetPort: 5280
+      protocol: TCP
+    - name: dnstap
+      port: 5253
+      targetPort: 5253
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netstatd
+  namespace: kube-system
+  labels:
+    app: netstatd
+spec:
+  type: ClusterIP
+  selector:
+    app: netstatd
+  ports:
+    - name: http-single
+      port: 5280
+      targetPort: 5280
+      protocol: TCP
+    - name: http-mux
+      port: 6280
+      targetPort: 6280
+      protocol: TCP
+    - name: dnstap-single
+      port: 5253
+      targetPort: 5253
+      protocol: TCP
+    - name: dnstap-mux
+      port: 6253
+      targetPort: 6253
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netstatd
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: netstatd
+  template:
+    metadata:
+      labels:
+        app: netstatd
+    spec:
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: netstatd
+          image: git.codemowers.io/laurivosandi/netstatd
+          ports:
+            - containerPort: 5280
+              protocol: TCP
+              name: http
+              hostPort: 5280
+            - containerPort: 6280
+              protocol: TCP
+              name: http-mux
+              hostPort: 6280
+            - containerPort: 5253
+              protocol: TCP
+              name: dnstap
+              hostPort: 5253
+            - containerPort: 6253
+              protocol: TCP
+              name: dnstap-mux
+              hostPort: 6253
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: FANOUT_SERVICE
+              value: netstatd-headless
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: containerd-sock
+              mountPath: /run/containerd/containerd.sock
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+      volumes:
+        - name: containerd-sock
+          hostPath:
+            path: /run/k3s/containerd/containerd.sock
+            type: Socket
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      serviceAccountName: netstatd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netstatd
+  namespace: kube-system

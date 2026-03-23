@@ -1,0 +1,27 @@
+kubernetes-api        6443/tcp   # Kubernetes API server (K3s default)
+k3s-supervisor        6444/tcp   # K3s supervisor API
+kubelet               10250/tcp  # Kubelet API
+kube-scheduler        10259/tcp  # Scheduler
+kube-controller       10257/tcp  # Controller manager
+etcd-client           2379/tcp   # etcd client communication
+etcd-peer             2380/tcp   # etcd peer communication
+
+# Cilium Core
+cilium-health         4240/tcp   # Health endpoint
+cilium-agent          9090/tcp   # Metrics (Prometheus)
+cilium-hubble         4244/tcp   # Hubble server
+cilium-hubble-relay   4245/tcp   # Hubble relay
+cilium-hubble-metrics 9091/tcp   # Hubble metrics
+
+kube-proxy-metrics    10249/tcp
+
+prometheus            9090/tcp
+alertmanager          9093/tcp
+containerd            2375/tcp
+containerd-tls        2376/tcp
+vxlan          8472/udp
+geneve         6081/udp
+wireguard             51820/udp
+ssh                   22/tcp
+metallb-speaker       7472/tcp
+metallb-controller    7473/tcp
