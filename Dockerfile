@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache \
     git \
@@ -11,7 +11,6 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd cmd
 COPY internal internal
-COPY web web
 RUN ARCH=$(apk --print-arch) && \
     if [ "$ARCH" = "x86_64" ]; then \
         BPF_ARCH=x86; \
@@ -25,6 +24,7 @@ RUN ARCH=$(apk --print-arch) && \
       -D__TARGET_ARCH_${BPF_ARCH} \
       -c internal/ebpf/bpf/tracer.bpf.c \
       -o internal/ebpf/tracer_bpfel.o
+RUN go test ./...
 RUN CGO_ENABLED=0 \
     go build -a -installsuffix cgo \
     -ldflags '-extldflags "-static" -s -w' \
@@ -35,8 +35,10 @@ FROM scratch
 WORKDIR /
 COPY --from=builder /app/netstatd .
 COPY --from=builder /app/internal/ebpf/tracer_bpfel.o ./internal/ebpf/
-COPY --from=builder /app/web ./web
 COPY --from=builder /etc/services /etc/services
 COPY services /services
+COPY web web
 EXPOSE 5280 6280 5253 6253
 ENTRYPOINT ["/netstatd"]
+
+CMD ["-log-level", "error"]

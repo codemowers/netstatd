@@ -12,8 +12,14 @@ services:
     pid: host
     volumes:
       - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
-      - /proc:/host/proc:ro
       - /sys/kernel/debug:/sys/kernel/debug:rw
     restart: unless-stopped
-    #command: ["./netstatd", "-log-level", "info", "-disable-udp"]
-    #command: ["./netstatd", "-log-level", "info", "-disable-tcp"]
+    command: ["-log-level", "info"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M

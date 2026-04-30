@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>netstatd</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
@@ -14,219 +15,402 @@
           <a href="#" class="nav-link active" data-view="connections"
             >Connections</a
           >
-          <a href="#" class="nav-link" data-view="ports">Ports</a>
-          <a href="#" class="nav-link" data-view="ips">IPs</a>
+          <a href="#" class="nav-link" data-view="nodes">Nodes</a>
+          <a href="#" class="nav-link" data-view="ports">Listening Ports</a>
+          <a href="#" class="nav-link" data-view="processes">Processes</a>
+          <a href="#" class="nav-link" data-view="containers">Containers</a>
+          <a href="#" class="nav-link" data-view="events">Events</a>
           <a href="#" class="nav-link" data-view="deployment">Deployment</a>
         </div>
       </div>
       <div class="status">
-        <div class="status-indicator" id="statusIndicator"></div>
-        <span id="statusText">Connecting...</span>
-        <span class="event-count"
-          >Events: <strong id="eventCount">0</strong></span
-        >
+        <button id="connectionToggle" class="connection-toggle disconnected">
+          Connecting… (0)
+        </button>
       </div>
     </nav>
 
-    <div id="connectionsView" class="view active">
+    <!-- ── Connections ─────────────────────────────────────────────────── -->
+    <div class="view" data-view="connections">
       <div class="filters">
-        <button id="toggleConnection" class="disconnected">Start</button>
         <input
           type="text"
-          id="filterNamespace"
-          placeholder="Filter by namespace..."
+          id="filterConnectionNamespace"
+          list="namespaceList"
+          placeholder="Namespace…"
         />
-        <input type="text" id="filterPod" placeholder="Filter by pod name..." />
-        <select id="filterNode">
-          <option value="">All Nodes</option>
-        </select>
-        <select id="filterProtocol">
+        <input
+          type="text"
+          id="filterConnectionPod"
+          list="podList"
+          placeholder="Pod…"
+        />
+        <input
+          type="text"
+          id="filterConnectionNode"
+          list="nodeList"
+          placeholder="Node…"
+        />
+        <select id="filterConnectionProtocol">
           <option value="">All Protocols</option>
           <option value="tcp">TCP</option>
           <option value="udp">UDP</option>
         </select>
-        <select id="filterState">
+        <select id="filterConnectionState">
           <option value="">All States</option>
           <option value="ESTABLISHED">ESTABLISHED</option>
-          <option value="TIME_WAIT">TIME_WAIT</option>
-          <option value="CLOSE_WAIT">CLOSE_WAIT</option>
           <option value="SYN_SENT">SYN_SENT</option>
-          <option value="SYN_RECV">SYN_RECV</option>
+          <option value="FIN_WAIT1">FIN_WAIT1</option>
+          <option value="FIN_WAIT2">FIN_WAIT2</option>
+          <option value="TIME_WAIT">TIME_WAIT</option>
+          <option value="CLOSE">CLOSE</option>
+          <option value="CLOSE_WAIT">CLOSE_WAIT</option>
+          <option value="LAST_ACK">LAST_ACK</option>
+          <option value="LISTEN">LISTEN</option>
+          <option value="CLOSING">CLOSING</option>
         </select>
-        <select id="filterPortType">
+        <select id="filterConnectionPortType">
           <option value="">Any Port</option>
           <option value="local">Local Port</option>
           <option value="remote">Remote Port</option>
         </select>
         <input
           type="number"
-          id="filterPort"
-          placeholder="Port number..."
+          id="filterConnectionPort"
+          placeholder="Port…"
           min="0"
           max="65535"
         />
-        <select id="filterIPFamily">
-          <option value="">All IP Families</option>
+        <select id="filterConnectionIPFamily">
+          <option value="">All Families</option>
           <option value="ipv4">IPv4</option>
           <option value="ipv6">IPv6</option>
         </select>
-        <label>
-          <input type="checkbox" id="filterLoopback" checked />
-          Loopback
-        </label>
-        <label>
-          <input type="checkbox" id="filterHost" checked />
-          Host
-        </label>
-        <label>
-          <input type="checkbox" id="filterPodCheckbox" checked />
-          Pod
-        </label>
-        <label>
-          <input type="checkbox" id="filterDedup" checked />
-          Dedup
-        </label>
-        <label>
-          <input type="checkbox" id="filterExternal" checked />
-          External
-        </label>
+        <label
+          ><input type="checkbox" id="filterConnectionHost" checked />
+          Host</label
+        >
+        <label
+          ><input type="checkbox" id="filterConnectionPodCheck" checked />
+          Pod</label
+        >
+        <label
+          ><input type="checkbox" id="filterConnectionExternal" checked />
+          External</label
+        >
+        <label
+          ><input type="checkbox" id="filterConnectionDedupe" checked />
+          Dedupe</label
+        >
       </div>
 
       <div class="connections-container">
-        <table class="connections-table">
+        <table class="data-table">
           <thead>
             <tr>
-              <th class="proto">Proto</th>
-              <th class="state">State</th>
-              <th>Local Address</th>
-              <th class="port">Local Port</th>
-              <th>Peer Address</th>
-              <th class="port">Peer Port</th>
-              <th class="node">Node</th>
+              <th class="col-protocol">Proto</th>
+              <th class="col-state">State</th>
+              <th class="col-node">Local Node</th>
+              <th class="col-endpoint">Local Endpoint</th>
+              <th class="col-node">Remote Node</th>
+              <th class="col-endpoint">Remote Endpoint</th>
+              <th class="col-pid">PID</th>
+              <th class="col-netns">Net NS</th>
+              <th class="col-exe">Process</th>
+              <th class="col-cgroup-slice">Cgroup Slice</th>
             </tr>
           </thead>
-          <tbody id="connectionsList">
-            <tr>
-              <td colspan="9" class="empty-state">
-                Waiting for connections...
-              </td>
-            </tr>
-          </tbody>
+          <tbody id="connectionsTableBody"></tbody>
         </table>
       </div>
     </div>
 
-    <div id="portsView" class="view">
+    <!-- ── Nodes ──────────────────────────────────────────────────────── -->
+    <div class="view" data-view="nodes">
       <div class="filters">
-        <input type="text" id="filterPortIP" placeholder="Filter by IP..." />
-        <select id="filterPortProtocol">
-          <option value="">All Protocols</option>
-          <option value="6">TCP</option>
-          <option value="17">UDP</option>
-        </select>
         <input
-          type="number"
-          id="filterPortNumber"
-          placeholder="Port number..."
-          min="0"
-          max="65535"
+          type="text"
+          id="filterNodeName"
+          list="nodeList"
+          placeholder="Node…"
         />
+      </div>
+
+      <div class="connections-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-node">Node</th>
+              <th>IP Addresses</th>
+              <th class="col-netns">Net NS</th>
+              <th>Image Hash</th>
+            </tr>
+          </thead>
+          <tbody id="nodesTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Ports & Addresses ───────────────────────────────────────────── -->
+    <div class="view" data-view="ports">
+      <div class="filters">
         <input
           type="text"
           id="filterPortNode"
-          placeholder="Filter by node..."
+          list="nodeList"
+          placeholder="Node…"
         />
         <input
           type="text"
-          id="filterPortExe"
-          placeholder="Filter by executable..."
+          id="filterPortNamespace"
+          list="namespaceList"
+          placeholder="Namespace…"
         />
-      </div>
-
-      <div class="connections-container">
-        <table class="connections-table">
-          <thead>
-            <tr>
-              <th class="proto">Proto</th>
-              <th>IP</th>
-              <th class="port">Port</th>
-              <th class="node">Node</th>
-              <th>PID</th>
-              <th>Executable</th>
-              <th>Namespace</th>
-              <th>Pod</th>
-              <th>Container</th>
-              <th>Net NS</th>
-              <th>Cgroup</th>
-            </tr>
-          </thead>
-          <tbody id="portsList">
-            <tr>
-              <td colspan="11" class="empty-state">Loading ports...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div id="ipsView" class="view">
-      <div class="filters">
-        <input type="text" id="filterIP" placeholder="Filter by IP..." />
-        <select id="filterIPType">
-          <option value="">All Types</option>
-          <option value="pod">Pod IPs</option>
-          <option value="host">Host IPs</option>
-          <option value="loopback">Loopback</option>
-        </select>
-        <select id="filterIPFamilyIPs">
-          <option value="">All IP Families</option>
+        <input
+          type="number"
+          id="filterPortNumber"
+          placeholder="Port…"
+          min="0"
+          max="65535"
+        />
+        <input
+          type="number"
+          id="filterPortNetNS"
+          placeholder="Net NS…"
+          min="0"
+        />
+        <select id="filterPortIPFamily">
+          <option value="">All Families</option>
           <option value="ipv4">IPv4</option>
           <option value="ipv6">IPv6</option>
         </select>
-        <input type="text" id="filterIPNode" placeholder="Filter by node..." />
+        <select id="filterPortType">
+          <option value="">All Types</option>
+          <option value="pod">Pod</option>
+          <option value="host">Host</option>
+        </select>
       </div>
 
       <div class="connections-container">
-        <table class="connections-table">
+        <table class="data-table">
           <thead>
             <tr>
-              <th>IP Address</th>
-              <th>Type</th>
-              <th>Pod/Container</th>
-              <th>Namespace</th>
-              <th class="node">Node</th>
-              <th>Hostname</th>
+              <th class="col-node">Node</th>
+              <th class="col-protocol">Proto</th>
+              <th class="col-ip">IP Address</th>
+              <th class="col-port">Port</th>
+              <th class="col-namespace">Namespace</th>
+              <th class="col-pod">Pod</th>
+              <th class="col-container">Container</th>
+              <th class="col-netns">Net NS</th>
+              <th class="col-pid">Last PID</th>
+              <th class="col-cgroup-slice">Cgroup Slice</th>
             </tr>
           </thead>
-          <tbody id="ipsList">
-            <tr>
-              <td colspan="6" class="empty-state">Loading IPs...</td>
-            </tr>
-          </tbody>
+          <tbody id="portsTableBody"></tbody>
         </table>
       </div>
     </div>
 
-    <div id="deploymentView" class="view">
+    <!-- ── Processes ───────────────────────────────────────────────────── -->
+    <div class="view" data-view="processes">
       <div class="filters">
-        <select id="deploymentType">
-          <option value="kubernetes">Kubernetes DaemonSet (Quick Deploy)</option>
-          <!-- <option value="kubernetes-full">Kubernetes Full</option> -->
-          <option value="docker-compose">Docker Compose</option>
-          <option value="docker-run">Docker Run</option>
+        <input
+          type="text"
+          id="filterProcessNode"
+          list="nodeList"
+          placeholder="Node…"
+        />
+        <input type="number" id="filterProcessPID" placeholder="PID…" min="0" />
+        <input
+          type="text"
+          id="filterProcessNamespace"
+          list="namespaceList"
+          placeholder="Namespace…"
+        />
+        <input
+          type="text"
+          id="filterProcessPod"
+          list="podList"
+          placeholder="Pod…"
+        />
+        <select id="filterProcessNetwork">
+          <option value="">All Net Types</option>
+          <option value="host">Host NetNS</option>
+          <option value="pod">Pod NetNS</option>
         </select>
-        <label>
-          <input type="checkbox" id="deployEnableTCP" checked />
-          Enable TCP
-        </label>
-        <label>
-          <input type="checkbox" id="deployEnableUDP" />
-          Enable UDP
-        </label>
       </div>
 
       <div class="connections-container">
-        <pre id="kubernetesDeployment" class="deployment-content"><code id="kubernetesManifest">cat <<EOF | kubectl apply -f -
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-node">Node</th>
+              <th class="col-pid">PID</th>
+              <th class="col-exe">Process</th>
+              <th class="col-netns">Net NS</th>
+              <th class="col-ip">Observed address</th>
+              <th class="col-namespace">Namespace</th>
+              <th class="col-pod">Pod</th>
+              <th class="col-container">Container</th>
+              <th class="col-container-uid">Container UID</th>
+              <th class="col-cgroup-slice">Cgroup Slice</th>
+            </tr>
+          </thead>
+          <tbody id="processesTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Containers ──────────────────────────────────────────────────── -->
+    <div class="view" data-view="containers">
+      <div class="filters">
+        <input
+          type="text"
+          id="filterContainerNamespace"
+          list="namespaceList"
+          placeholder="Namespace…"
+        />
+        <input
+          type="text"
+          id="filterContainerPod"
+          list="podList"
+          placeholder="Pod…"
+        />
+        <input
+          type="text"
+          id="filterContainerNode"
+          list="nodeList"
+          placeholder="Node…"
+        />
+        <input type="text" id="filterContainerCgroup" placeholder="Cgroup…" />
+        <select id="filterContainerNetwork">
+          <option value="">All Networks</option>
+          <option value="host">Host Network</option>
+          <option value="pod">Pod Network</option>
+        </select>
+      </div>
+
+      <div class="connections-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-node">Node</th>
+              <th class="col-container-uid">Container UID</th>
+              <th class="col-pod-uid">Pod UID</th>
+              <th class="col-namespace">Namespace</th>
+              <th class="col-pod">Pod</th>
+              <th class="col-container">Container</th>
+              <th class="col-image">Image</th>
+              <th class="col-network">Net NS</th>
+              <th class="col-labels">Labels</th>
+            </tr>
+          </thead>
+          <tbody id="containersTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Events ──────────────────────────────────────────────────────── -->
+    <div class="view" data-view="events">
+      <div class="filters">
+        <select id="filterEventType">
+          <option value="">All Event Types</option>
+          <option value="connection.event">connection.event</option>
+          <option value="connection.accepted">connection.accepted</option>
+          <option value="process.metainfo">process.metainfo</option>
+          <option value="container.metainfo">container.metainfo</option>
+          <option value="container.added">container.added</option>
+          <option value="container.deleted">container.deleted</option>
+          <option value="port.listening">port.listening</option>
+          <option value="host.info">host.info</option>
+        </select>
+        <select id="filterEventProtocol">
+          <option value="">All Protocols</option>
+          <option value="TCP">TCP</option>
+          <option value="UDP">UDP</option>
+        </select>
+        <input
+          type="text"
+          id="filterEventNode"
+          list="nodeList"
+          placeholder="Node…"
+        />
+        <select id="filterEventState">
+          <option value="">All States</option>
+          <option value="ESTABLISHED">ESTABLISHED</option>
+          <option value="SYN_SENT">SYN_SENT</option>
+          <option value="FIN_WAIT1">FIN_WAIT1</option>
+          <option value="FIN_WAIT2">FIN_WAIT2</option>
+          <option value="TIME_WAIT">TIME_WAIT</option>
+          <option value="CLOSE">CLOSE</option>
+          <option value="CLOSE_WAIT">CLOSE_WAIT</option>
+          <option value="LAST_ACK">LAST_ACK</option>
+          <option value="LISTEN">LISTEN</option>
+          <option value="CLOSING">CLOSING</option>
+        </select>
+        <input type="text" id="filterEventLocalIP" placeholder="Local IP…" />
+        <input type="text" id="filterEventRemoteIP" placeholder="Remote IP…" />
+        <input
+          type="number"
+          id="filterEventLocalPort"
+          placeholder="Local Port…"
+          min="0"
+          max="65535"
+        />
+        <input
+          type="number"
+          id="filterEventRemotePort"
+          placeholder="Remote Port…"
+          min="0"
+          max="65535"
+        />
+        <input type="number" id="filterEventPID" placeholder="PID…" min="0" />
+        <input
+          type="number"
+          id="filterEventSockCookie"
+          placeholder="Sock Cookie…"
+          min="0"
+        />
+        <button id="clearEvents">Clear</button>
+        <span style="color: #666; margin-left: 10px"
+          >Showing last 25 events</span
+        >
+      </div>
+
+      <div class="connections-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="col-timestamp">Timestamp</th>
+              <th class="col-event-type">Type</th>
+              <th class="col-node">Node</th>
+              <th>Data</th>
+            </tr>
+          </thead>
+          <tbody id="eventsList"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Deployment ──────────────────────────────────────────────────── -->
+    <div class="view" data-view="deployment">
+      <div class="filters">
+        <select id="deploymentType">
+          <option value="kubernetes">
+            Kubernetes DaemonSet (Quick Deploy)
+          </option>
+          <option value="docker-compose">Docker Compose</option>
+          <option value="docker-run">Docker Run</option>
+        </select>
+      </div>
+
+      <div class="connections-container">
+        <pre
+          id="kubernetesDeployment"
+          class="deployment-content"
+        ><code>cat &lt;&lt;EOF | kubectl apply -f -
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -243,74 +427,61 @@ spec:
     spec:
       hostNetwork: true
       hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
       containers:
       - name: netstatd
         image: codemowers/netstatd
         imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        ports:
+          - containerPort: 5280
+            protocol: TCP
+            name: http
+            hostPort: 5280
+          - containerPort: 6280
+            protocol: TCP
+            name: http-mux
+            hostPort: 6280
         env:
         - name: NODE_NAME
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        args: []
+        - name: FANOUT_SERVICE
+          value: netstatd-headless
+        - name: LOG_LEVEL
+          value: "info"
         securityContext:
           privileged: true
         volumeMounts:
-        - name: proc
-          mountPath: /host/proc
-          readOnly: true
         - name: containerd-sock
           mountPath: /run/containerd/containerd.sock
+        - name: sys-kernel-tracing
+          mountPath: /sys/kernel/tracing
+        - name: sys-kernel-debug
+          mountPath: /sys/kernel/debug
       volumes:
-      - name: proc
-        hostPath:
-          path: /proc
       - name: containerd-sock
         hostPath:
           path: /run/containerd/containerd.sock
-EOF</code></pre>
-
-        <pre id="kubernetesFullDeployment" class="deployment-content" style="display: none;"><code id="kubernetesFullManifest">apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: netstatd
-  namespace: kube-system
-spec:
-  selector:
-    matchLabels:
-      app: netstatd
-  template:
-    metadata:
-      labels:
-        app: netstatd
-    spec:
-      hostNetwork: true
-      hostPID: true
-      containers:
-      - name: netstatd
-        image: codemowers/netstatd
-        imagePullPolicy: Always
-        env:
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-        args: []
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: proc
-          mountPath: /host/proc
-          readOnly: true
-        - name: containerd-sock
-          mountPath: /run/containerd/containerd.sock
-      volumes:
-      - name: proc
+          type: Socket
+      - name: sys-kernel-tracing
         hostPath:
-          path: /proc
-      - name: containerd-sock
+          path: /sys/kernel/tracing
+          type: Directory
+      - name: sys-kernel-debug
         hostPath:
-          path: /run/containerd/containerd.sock
+          path: /sys/kernel/debug
+          type: Directory
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
 ---
 apiVersion: v1
 kind: Service
@@ -328,56 +499,13 @@ spec:
     port: 5280
     targetPort: 5280
     protocol: TCP
-  - name: dnstap
-    port: 5253
-    targetPort: 5253
-    protocol: TCP
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: netstatd-fanout
-  namespace: kube-system
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: netstatd-fanout
-  template:
-    metadata:
-      labels:
-        app: netstatd-fanout
-    spec:
-      containers:
-      - name: netstatd-fanout
-        image: codemowers/netstatd
-        imagePullPolicy: Always
-        args:
-        - "-fanout"
-        - "http://netstatd-headless.kube-system.svc.cluster.local:5280/netstat"
-        ports:
-        - name: http
-          containerPort: 6280
-          protocol: TCP
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: netstatd-fanout
-  namespace: kube-system
-  labels:
-    app: netstatd-fanout
-spec:
-  type: ClusterIP
-  selector:
-    app: netstatd-fanout
-  ports:
-  - name: http
-    port: 6280
-    targetPort: 6280
-    protocol: TCP</code></pre>
+EOF</code></pre>
 
-        <pre id="dockerComposeDeployment" class="deployment-content" style="display: none;"><code id="dockerComposeManifest">version: "3.8"
+        <pre
+          id="dockerComposeDeployment"
+          class="deployment-content"
+          style="display: none"
+        ><code>version: "3.8"
 
 services:
   netstatd:
@@ -388,18 +516,19 @@ services:
     pid: host
     volumes:
       - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
-      - /proc:/host/proc:ro
       - /sys/kernel/debug:/sys/kernel/debug:rw
-    restart: unless-stopped
-    command: []</code></pre>
+    restart: unless-stopped</code></pre>
 
-        <pre id="dockerRunDeployment" class="deployment-content" style="display: none;"><code id="dockerRunCommand">docker run -d \
+        <pre
+          id="dockerRunDeployment"
+          class="deployment-content"
+          style="display: none"
+        ><code>docker run -d \
   --name netstatd \
   --privileged \
   --network host \
   --pid host \
   -v /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro \
-  -v /proc:/host/proc:ro \
   -v /sys/kernel/debug:/sys/kernel/debug:rw \
   codemowers/netstatd</code></pre>
       </div>
@@ -407,12 +536,29 @@ services:
 
     <div class="footer-disclaimer">
       <p>
-        This software is developed by
-        <a href="https://codemowers.io" target="_blank">codemowers.io</a>. It is
-        provided as-is without any warranties. Use at your own risk.
+        Developed by
+        <a href="https://codemowers.io" target="_blank">codemowers.io</a>.
+        Provided as-is without any warranties. Use at your own risk.
       </p>
     </div>
 
+    <!-- datalists for autocomplete -->
+    <datalist id="namespaceList"></datalist>
+    <datalist id="podList"></datalist>
+    <datalist id="nodeList"></datalist>
+
     <script src="/static/app.js"></script>
+    <script src="/static/storage.js"></script>
+    <script src="/static/endpoints.js"></script>
+    <script src="/static/filters.js"></script>
+    <script src="/static/dropdowns.js"></script>
+    <script src="/static/nodes.js"></script>
+    <script src="/static/containers.js"></script>
+    <script src="/static/ports.js"></script>
+    <script src="/static/processes.js"></script>
+    <script src="/static/connections.js"></script>
+    <script src="/static/events.js"></script>
+    <script src="/static/events-view.js"></script>
+    <script src="/static/init.js"></script>
   </body>
 </html>

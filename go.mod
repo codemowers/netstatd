@@ -5,9 +5,6 @@ go 1.22.0
 require (
 	github.com/cilium/ebpf v0.12.3
 	github.com/containerd/containerd/v2 v2.0.0
-	github.com/dnstap/golang-dnstap v0.4.0
-	github.com/farsightsec/golang-framestream v0.3.0
-	github.com/golang/protobuf v1.5.4
 	github.com/gorilla/websocket v1.5.1
 )
 
@@ -36,7 +33,6 @@ require (
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
-	github.com/miekg/dns v1.1.31 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
@@ -56,7 +52,6 @@ require (
 	go.opentelemetry.io/otel v1.31.0 // indirect
 	go.opentelemetry.io/otel/metric v1.31.0 // indirect
 	go.opentelemetry.io/otel/trace v1.31.0 // indirect
-	golang.org/x/crypto v0.28.0 // indirect
 	golang.org/x/exp v0.0.0-20231214170342-aacd6d4b4611 // indirect
 	golang.org/x/mod v0.21.0 // indirect
 	golang.org/x/net v0.30.0 // indirect

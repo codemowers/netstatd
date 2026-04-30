@@ -5,7 +5,7 @@ metadata:
 
 deploy:
   kubectl: {}
-  kubeContext: ee-lte-1.codemowers.io
+  kubeContext: admin@ee-lte-1.codemowers.io
 
 manifests:
   rawYaml:

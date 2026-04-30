@@ -13,12 +13,13 @@ import (
 
 type tracerConnEvent struct {
 	Pid        uint32
-	Tgid       uint32
+	Pad        uint32
 	Family     uint16
 	Sport      uint16
 	Dport      uint16
 	State      uint32
 	Protocol   uint8
+	EventType  uint8
 	SockCookie uint64
 	Ipv4       struct {
 		Saddr uint32
@@ -72,6 +73,8 @@ type tracerSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type tracerProgramSpecs struct {
 	TraceInetSockSetState *ebpf.ProgramSpec `ebpf:"trace_inet_sock_set_state"`
+	TraceInetCskAcceptRet *ebpf.ProgramSpec `ebpf:"trace_inet_csk_accept_ret"`
+	TraceSysExitListen    *ebpf.ProgramSpec `ebpf:"trace_sys_exit_listen"`
 	TraceUdpRecvmsg       *ebpf.ProgramSpec `ebpf:"trace_udp_recvmsg"`
 	TraceUdpSendmsg       *ebpf.ProgramSpec `ebpf:"trace_udp_sendmsg"`
 }
@@ -80,6 +83,7 @@ type tracerProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tracerMapSpecs struct {
+	Config *ebpf.MapSpec `ebpf:"config"`
 	Events *ebpf.MapSpec `ebpf:"events"`
 }
 
@@ -96,6 +100,8 @@ type tracerObjects struct {
 // It can be passed to loadTracerObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracerPrograms struct {
 	TraceInetSockSetState *ebpf.Program `ebpf:"trace_inet_sock_set_state"`
+	TraceInetCskAcceptRet *ebpf.Program `ebpf:"trace_inet_csk_accept_ret"`
+	TraceSysExitListen    *ebpf.Program `ebpf:"trace_sys_exit_listen"`
 	TraceUdpRecvmsg       *ebpf.Program `ebpf:"trace_udp_recvmsg"`
 	TraceUdpSendmsg       *ebpf.Program `ebpf:"trace_udp_sendmsg"`
 }
@@ -104,6 +110,7 @@ type tracerPrograms struct {
 //
 // It can be passed to loadTracerObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracerMaps struct {
+	Config *ebpf.Map `ebpf:"config"`
 	Events *ebpf.Map `ebpf:"events"`
 }
 
@@ -123,6 +130,12 @@ func (t *tracerPrograms) Close() error {
 	if e := t.TraceInetSockSetState.Close(); e != nil {
 		err = e
 	}
+	if e := t.TraceInetCskAcceptRet.Close(); e != nil {
+		err = e
+	}
+	if e := t.TraceSysExitListen.Close(); e != nil {
+		err = e
+	}
 	if e := t.TraceUdpRecvmsg.Close(); e != nil {
 		err = e
 	}
@@ -134,6 +147,9 @@ func (t *tracerPrograms) Close() error {
 
 func (t *tracerMaps) Close() error {
 	var err error
+	if e := t.Config.Close(); e != nil {
+		err = e
+	}
 	if e := t.Events.Close(); e != nil {
 		err = e
 	}

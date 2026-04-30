@@ -1,0 +1,54 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: netstatd
+  namespace: kube-system
+spec:
+  secretName: netstat-tls
+  issuerRef:
+    name: letsencrypt
+    kind: ClusterIssuer
+  dnsNames:
+    - netstat.ee-lte-1.codemowers.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netstatd-mux
+  namespace: kube-system
+  labels:
+    app: netstatd
+spec:
+  type: ClusterIP
+  selector:
+    app: netstatd
+  ports:
+    - name: http-mux
+      port: 6280
+      targetPort: 6280
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: netstatd
+  namespace: kube-system
+  labels:
+    app: netstatd
+spec:
+  tls:
+    - hosts:
+        - netstat.ee-lte-1.codemowers.io
+      secretName: netstat-tls
+  rules:
+    - host: netstat.ee-lte-1.codemowers.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: netstatd-mux
+                port:
+                  number: 6280

@@ -15,10 +15,6 @@ spec:
       port: 5280
       targetPort: 5280
       protocol: TCP
-    - name: dnstap
-      port: 5253
-      targetPort: 5253
-      protocol: TCP
 ---
 apiVersion: v1
 kind: Service
@@ -40,14 +36,6 @@ spec:
       port: 6280
       targetPort: 6280
       protocol: TCP
-    - name: dnstap-single
-      port: 5253
-      targetPort: 5253
-      protocol: TCP
-    - name: dnstap-mux
-      port: 6253
-      targetPort: 6253
-      protocol: TCP
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -66,9 +54,20 @@ spec:
       hostNetwork: true
       hostPID: true
       dnsPolicy: ClusterFirstWithHostNet
+      imagePullSecrets:
+        - name: zot
       containers:
         - name: netstatd
           image: git.codemowers.io/laurivosandi/netstatd
+          args:
+            - "--log-level=warn"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           ports:
             - containerPort: 5280
               protocol: TCP
@@ -78,14 +77,6 @@ spec:
               protocol: TCP
               name: http-mux
               hostPort: 6280
-            - containerPort: 5253
-              protocol: TCP
-              name: dnstap
-              hostPort: 5253
-            - containerPort: 6253
-              protocol: TCP
-              name: dnstap-mux
-              hostPort: 6253
           env:
             - name: NODE_NAME
               valueFrom:
@@ -93,30 +84,56 @@ spec:
                   fieldPath: spec.nodeName
             - name: FANOUT_SERVICE
               value: netstatd-headless
+            - name: LOG_LEVEL
+              value: "info"
           securityContext:
             privileged: true
           volumeMounts:
             - name: containerd-sock
               mountPath: /run/containerd/containerd.sock
-            - name: proc
-              mountPath: /host/proc
-              readOnly: true
+            - name: sys-kernel-tracing
+              mountPath: /sys/kernel/tracing
+            - name: sys-kernel-debug
+              mountPath: /sys/kernel/debug
       volumes:
         - name: containerd-sock
           hostPath:
             path: /run/k3s/containerd/containerd.sock
             type: Socket
-        - name: proc
+        - name: sys-kernel-tracing
           hostPath:
-            path: /proc
+            path: /sys/kernel/tracing
+            type: Directory
+        - name: sys-kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
             type: Directory
       tolerations:
         - effect: NoSchedule
           operator: Exists
       serviceAccountName: netstatd
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: netstatd
   namespace: kube-system
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: netstatd
+  namespace: kube-system
+  labels:
+    app: netstatd
+spec:
+  selector:
+    matchLabels:
+      app: netstatd
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  podMetricsEndpoints:
+    - port: http

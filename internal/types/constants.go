@@ -6,6 +6,14 @@ const (
 	ProtocolUDP = 17
 )
 
+const (
+	ConnEventTCPState      = 1
+	ConnEventListenSyscall = 2
+	ConnEventTCPAccept     = 3
+	ConnEventUDPSend       = 4
+	ConnEventUDPRecv       = 5
+)
+
 // Protocol names - returns empty string for unknown protocols
 var ProtocolNames = map[uint8]string{
 	ProtocolTCP: "TCP",

@@ -1,63 +1,21 @@
 package types
 
-import (
-	"net"
-	"time"
-)
-
-// ConnectionEntry represents a single connection tracking entry
-type ConnectionEntry struct {
-	Protocol   uint8  `json:"protocol"` // Raw protocol number (6=TCP, 17=UDP, etc)
-	SourceIP   string `json:"sourceIP"`
-	SourcePort uint16 `json:"sourcePort"`
-	DestIP     string `json:"destIP"`
-	DestPort   uint16 `json:"destPort"`
-	State      string `json:"state"`
-}
+import "net"
 
 // ConnEvent represents a raw event from eBPF
+// Fields are ordered to match eBPF struct (minimal padding)
+// IPv4 addresses are encoded as IPv4-mapped IPv6 (::ffff:0:0/96)
 type ConnEvent struct {
-	PID        uint32 `json:"pid"`
-	TGID       uint32 `json:"tgid"`   // Thread group ID (task ID)
-	Family     uint16 `json:"family"` // AF_INET=2, AF_INET6=10
-	Sport      uint16 `json:"sport"`
-	Dport      uint16 `json:"dport"`
-	State      uint32 `json:"state"`
-	Protocol   uint8  `json:"protocol"`   // 6=TCP, 17=UDP
-	SockCookie uint64 `json:"sockCookie"` // Socket cookie for connection tracking
-	// For IPv4
-	SaddrV4 uint32 `json:"saddrV4"`
-	DaddrV4 uint32 `json:"daddrV4"`
-	// For IPv6
-	SaddrV6 [16]uint8 `json:"saddrV6"`
-	DaddrV6 [16]uint8 `json:"daddrV6"`
-}
-
-// ToConnectionEntry converts a ConnEvent to a ConnectionEntry
-func (ce *ConnEvent) ToConnectionEntry() *ConnectionEntry {
-	entry := &ConnectionEntry{
-		Protocol:   ce.Protocol,
-		SourcePort: ce.Sport,
-		DestPort:   ce.Dport,
-		State:      ce.StateToString(),
-	}
-
-	// Set IP addresses based on family
-	if ce.Family == 2 { // IPv4
-		entry.SourceIP = intToIP(ce.SaddrV4).String()
-		entry.DestIP = intToIP(ce.DaddrV4).String()
-	} else if ce.Family == 10 { // IPv6
-		// For IPv6, create a proper net.IP from the 16-byte array
-		// Make a copy to avoid referencing the original array
-		srcIP := make(net.IP, 16)
-		dstIP := make(net.IP, 16)
-		copy(srcIP, ce.SaddrV6[:])
-		copy(dstIP, ce.DaddrV6[:])
-		entry.SourceIP = srcIP.String()
-		entry.DestIP = dstIP.String()
-	}
-
-	return entry
+	SockCookie uint64    `json:"sockCookie"` // Socket cookie for connection tracking
+	PID        uint32    `json:"pid"`        // Process ID from bpf_get_current_pid_tgid()
+	State      uint32    `json:"state"`      // Current TCP state
+	Family     uint16    `json:"family"`     // AF_INET=2, AF_INET6=10
+	Sport      uint16    `json:"sport"`
+	Dport      uint16    `json:"dport"`
+	Protocol   uint8     `json:"protocol"` // 6=TCP, 17=UDP
+	EventType  uint8     `json:"eventType"`
+	SaddrV6    [16]uint8 `json:"saddrV6"` // Source address (IPv6 or IPv4-mapped IPv6)
+	DaddrV6    [16]uint8 `json:"daddrV6"` // Destination address (IPv6 or IPv4-mapped IPv6)
 }
 
 // StateToString converts state to string representation
@@ -96,68 +54,61 @@ func intToIP(ip uint32) net.IP {
 	return IntToIP(ip)
 }
 
-// KubeMetadata contains Kubernetes metadata extracted from containerd labels
-type KubeMetadata struct {
-	PodName       string            `json:"podName"`
-	Namespace     string            `json:"namespace"`
-	PodUID        string            `json:"podUID"`
-	ContainerName string            `json:"containerName"`
-	Labels        map[string]string `json:"labels,omitempty"`
-	Annotations   map[string]string `json:"annotations,omitempty"`
+// LocalRemoteIPs returns the decoded local and remote IP addresses.
+func (ce *ConnEvent) LocalRemoteIPs() (string, string) {
+	isAllZero := func(b []uint8) bool {
+		for _, v := range b {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Addresses are always in IPv6 format (IPv4 uses IPv4-mapped IPv6).
+	// Unspecified addresses are returned as empty strings so callers can
+	// count them as missing instead of rendering "[::]" or "0.0.0.0".
+	if ce.Family == 2 { // IPv4
+		if isAllZero(ce.SaddrV6[12:16]) {
+			if isAllZero(ce.DaddrV6[12:16]) {
+				return "", ""
+			}
+			return "", net.IPv4(ce.DaddrV6[12], ce.DaddrV6[13], ce.DaddrV6[14], ce.DaddrV6[15]).String()
+		}
+		if isAllZero(ce.DaddrV6[12:16]) {
+			return net.IPv4(ce.SaddrV6[12], ce.SaddrV6[13], ce.SaddrV6[14], ce.SaddrV6[15]).String(), ""
+		}
+		return net.IPv4(ce.SaddrV6[12], ce.SaddrV6[13], ce.SaddrV6[14], ce.SaddrV6[15]).String(),
+			net.IPv4(ce.DaddrV6[12], ce.DaddrV6[13], ce.DaddrV6[14], ce.DaddrV6[15]).String()
+	}
+	if ce.Family == 10 { // IPv6
+		if isAllZero(ce.SaddrV6[:]) {
+			if isAllZero(ce.DaddrV6[:]) {
+				return "", ""
+			}
+			return "", net.IP(ce.DaddrV6[:]).String()
+		}
+		if isAllZero(ce.DaddrV6[:]) {
+			return net.IP(ce.SaddrV6[:]).String(), ""
+		}
+		localIP := make(net.IP, 16)
+		remoteIP := make(net.IP, 16)
+		copy(localIP, ce.SaddrV6[:])
+		copy(remoteIP, ce.DaddrV6[:])
+		return localIP.String(), remoteIP.String()
+	}
+	return "", ""
 }
 
 // ContainerInfo represents a container with its metadata
 type ContainerInfo struct {
-	ID              string        `json:"id"`
-	Name            string        `json:"name"`
-	Namespace       string        `json:"namespace"`                 // Containerd namespace
-	PID             uint32        `json:"pid"`                       // Root process PID
-	PodIPs          []string      `json:"podIPs,omitempty"`          // All pod IPs (IPv4, IPv6, etc) - empty for host network pods
-	UsesHostNetwork bool          `json:"usesHostNetwork,omitempty"` // True if pod uses host networking
-	KubeMetadata    *KubeMetadata `json:"kubernetes,omitempty"`
-}
-
-// WebSocketEvent is the envelope for all WebSocket messages
-type WebSocketEvent struct {
-	Type      string      `json:"type"`
-	Timestamp string      `json:"timestamp"`
-	NodeName  string      `json:"nodeName,omitempty"`
-	Data      interface{} `json:"data"`
-}
-
-// ContainerAddedEvent is emitted when a new container starts
-type ContainerAddedEvent struct {
-	ContainerID  string        `json:"containerId"`
-	Name         string        `json:"name"`
-	Namespace    string        `json:"namespace"` // Containerd namespace
-	PID          uint32        `json:"pid"`
-	KubeMetadata *KubeMetadata `json:"kubernetes,omitempty"`
-}
-
-// ContainerDeletedEvent is emitted when a container stops
-type ContainerDeletedEvent struct {
-	ContainerUID string `json:"containerUID"`
-}
-
-// ContainerListResponse is the response for GET /api/containers
-type ContainerListResponse struct {
-	Timestamp  string          `json:"timestamp"`
-	Containers []ContainerInfo `json:"containers"`
-}
-
-// ListeningPort represents a listening socket
-type ListeningPort struct {
-	Protocol uint8  `json:"protocol"` // 6 for TCP, 17 for UDP
-	IP       string `json:"ip"`
-	Port     uint16 `json:"port"`
-	PID      uint32 `json:"pid"`
-	Process  string `json:"process,omitempty"`
-	NetNS    uint64 `json:"netns,omitempty"` // Network namespace inode number
-}
-
-// Event represents an internal event in the system
-type Event struct {
-	Type      string
-	Timestamp time.Time
-	Container *ContainerInfo
+	ID                  string            `json:"containerUid"`
+	Name                string            `json:"name"`
+	ContainerdNamespace string            `json:"containerdNamespace,omitempty"` // Containerd namespace
+	PodName             string            `json:"podName,omitempty"`
+	PodNamespace        string            `json:"podNamespace,omitempty"` // Kubernetes namespace
+	PodUID              string            `json:"podUid,omitempty"`
+	ContainerName       string            `json:"containerName,omitempty"`
+	Image               string            `json:"image,omitempty"`
+	Labels              map[string]string `json:"labels,omitempty"`
 }

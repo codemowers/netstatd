@@ -11,12 +11,13 @@ netstatd is a Kubernetes DaemonSet that provides real-time visibility into netwo
 - **Real-time Connection Tracking**: Monitor TCP and UDP connections as they happen
 - **Container Correlation**: Automatically match connections to pods and containers
 - **Listening Port Discovery**: Identify which services are exposed by each pod
-- **DNS Integration**: Optional DNSTap collector for hostname resolution
-- **Web Interface**: Interactive UI with four views (Connections, Ports, IPs, Deployment)
+- **Web Interface**: Interactive UI with five views (Connections, Ports, Addresses, Events, Deployment)
 - **Cluster-wide View**: Multiplexer mode aggregates data from all nodes
 - **Prometheus Metrics**: Built-in metrics endpoint for monitoring
 - **IPv4 and IPv6 Support**: Full dual-stack networking support
 - **Host Network Detection**: Automatically identifies pods using host networking
+- **Socket Cookie Tracking**: Stable TCP connection tracking even when PID is unavailable
+- **Loopback Filtering**: Loopback traffic filtered at eBPF kernel level for efficiency
 
 ## Quick Start
 
@@ -63,61 +64,68 @@ Then open http://localhost:6280 in your browser.
 
 ### Command-line Flags
 
-- `--log-level`: Set log level: trace, debug, info, warn, error (default: info)
+- `--log-level`: Set log level: trace, debug, info, warn, error (default: warn)
 - `--http-port`: HTTP port for single-pod server (default: 5280)
 - `--http-mux-port`: HTTP port for multiplexer server (default: 6280)
-- `--dnstap-port`: DNSTap port for single-pod server (default: 5253)
-- `--dnstap-mux-port`: DNSTap port for multiplexer server (default: 6253)
+- `--disable-tcp`: Disable TCP connection monitoring
+- `--enable-udp`: Enable UDP connection monitoring (disabled by default)
+
+**Note:** Loopback connections (127.0.0.0/8 and ::1) are always filtered at the eBPF kernel level for performance.
 
 ## API
 
 ### REST API
 
-- `GET /api/containers` - List containers with metadata (supports `?namespace=` and `?podName=` filters)
-- `GET /api/pid-exe?pid=<pid>` - Resolve PID to executable name
 - `GET /metrics` - Prometheus metrics
 
 ### WebSocket API
 
-- `ws://host:5280/netstat` - Single pod events
-- `ws://host:6280/netstat` - Cluster-wide fanout
+- `ws://host:5280/conntrack` - Single pod events
+- `ws://host:6280/conntrack` - Cluster-wide fanout
 
 ### Event Types
 
 - `host.info` - Host IP addresses and node information
-- `container.added` - New container starts (includes `usesHostNetwork` flag)
+- `container.added` - New container starts (includes container and pod metadata)
 - `container.deleted` - Container stops
-- `connection.event` - TCP/UDP connection event from eBPF (includes PID and executable)
-- `port.listening` - Listening port discovered (includes network namespace)
+- `connection.event` - TCP/UDP connection event from eBPF
+  - Includes: protocol (string), state (string), socket cookie, node name, IPs, and ports
+- `connection.accepted` - Accepted inbound TCP connection PID enrichment
+  - Includes the same connection fields plus PID; process/container metadata is sent first as `process.metainfo`/`container.metainfo`
+- `port.listening` - Listening port discovered
+  - Includes: protocol (string), IP, port, network namespace, host-netns flag, and pod metadata when resolved
+- `process.metainfo` - PID metadata for executable, cgroup slice, container UID, and network namespace
 
 ## Web Interface
 
-The web interface provides four main views:
+The web interface provides five views:
 
 ### Connections View
 
-- Real-time list of active connections
-- Filter by namespace, pod, node, protocol, state, port, IP family
+- Real-time list of active TCP/UDP connections
+- Filter by namespace, pod, node, protocol, state, port, IP family, and dedupe
+- Columns are `Proto`, `Local Node`, `Local Endpoint`, `Remote Node`, `Remote Endpoint`, `State`, `PID`, `Exe`, and `Net NS Type`
 - Visual indicators for pod, host, and external connections
-- Executable name for each connection
-- Support for loopback and host network filtering
 - Color-coded connection endpoints (pod=green, host=blue, external=red)
+- Socket cookie-based tracking for stable TCP connection identification
+- Automatic cleanup of destroyed connections with visual fade-out animation
 
 ### Ports View
 
-- List of listening TCP/UDP ports
-- Filter by IP, protocol, port number, node, executable
-- Shows which pod/container owns each port
-- Network namespace tracking
-- Identifies host network pods
+- List of all listening TCP/UDP ports discovered across the cluster
+- Filter by port number, node, namespace, netns, IP family, and endpoint type
+- Shows which pod/container owns each port (when available)
+- Network namespace tracking for port isolation
+- Last accepted PID and cgroup slice are filled from `connection.accepted`/`process.metainfo`
+- Identifies host network pods and host processes
 
-### IPs View
+### Addresses View
 
 - All discovered IP addresses in the cluster
-- Categorized as pod, host, or loopback
-- Filter by IP, type, IP family, node
-- Hostname resolution from DNS cache
+- Categorized as pod or host
+- Filter by IP, type, IP family, pod, node
 - Automatic detection of host network pod IPs
+- Shows pod and namespace associations for pod IPs
 
 ### Deployment View
 
@@ -125,12 +133,19 @@ The web interface provides four main views:
 - Example DaemonSet configuration
 - Service definitions for headless and regular services
 
+### Events View
+
+- Real-time event stream showing last 25 events
+- Displays all WebSocket events (container.added, connection.event, port.listening, etc.)
+- Timestamp, event type, node name, and full event data
+- Useful for debugging and understanding system behavior
+
 ## Metrics
 
 Prometheus metrics are available at `/metrics`:
 
-- `netstatd_events_total{protocol,family}`: Total events by protocol and IP family
-- `netstatd_events_by_state{protocol,family,state}`: Events by connection state
+- `netstatd_events_total{protocol,family}`: Total events by protocol (6=TCP, 17=UDP) and IP family (2=IPv4, 10=IPv6)
+- `netstatd_events_by_state{protocol,family,state}`: Events by connection state (ESTABLISHED, CLOSE, etc.)
 
 ## Architecture
 
@@ -164,28 +179,13 @@ skaffold build
 
 ## Development
 
-### Prerequisites
+Use `skaffold dev` or `docker compose up --build`.
 
-- Go 1.21+
-- Linux development environment
-- clang and llvm (for eBPF compilation)
-- bpf2go tool: `go install github.com/cilium/ebpf/cmd/bpf2go@latest`
+When commiting changes clean up:
 
-### Regenerate eBPF Code
-
-```bash
-cd internal/ebpf
-go generate
 ```
-
-### Run Locally
-
-```bash
-# Build
-go build -o netstatd cmd/server/main.go
-
-# Run (requires root for eBPF)
-sudo ./netstatd --log-level=debug
+go fmt ./...
+npx prettier cmd --write
 ```
 
 ## License
