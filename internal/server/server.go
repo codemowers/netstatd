@@ -3,17 +3,12 @@ package server
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +26,8 @@ var hostNetNSInt uint64
 
 const procPath = "/proc"
 const clientEventBufferSize = 100000
+
+var buildSourceHash string
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -167,59 +164,7 @@ func NewServer(ctrdClient *containerd.Client, tracer *ebpf.Tracer, fanoutService
 }
 
 func computeImageHash() string {
-	roots := []string{
-		"/netstatd",
-		"/internal/ebpf",
-		"/services",
-		"/web",
-		"/etc/services",
-	}
-	paths := make([]string, 0)
-	for _, root := range roots {
-		if info, err := os.Stat(root); err != nil {
-			if !os.IsNotExist(err) {
-				slog.Warn("Failed to stat image hash path", "path", root, "error", err)
-			}
-			continue
-		} else if !info.IsDir() {
-			paths = append(paths, root)
-			continue
-		}
-
-		if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				slog.Warn("Failed to walk image hash path", "path", path, "error", err)
-				return nil
-			}
-			if info.Mode().IsRegular() {
-				paths = append(paths, path)
-			}
-			return nil
-		}); err != nil {
-			slog.Warn("Failed to walk image hash root", "path", root, "error", err)
-		}
-	}
-	if len(paths) == 0 {
-		return ""
-	}
-
-	sort.Strings(paths)
-	hash := sha256.New()
-	for _, path := range paths {
-		file, err := os.Open(path)
-		if err != nil {
-			slog.Warn("Failed to open image hash file", "path", path, "error", err)
-			continue
-		}
-		io.WriteString(hash, path)
-		hash.Write([]byte{0})
-		if _, err := io.Copy(hash, file); err != nil {
-			slog.Warn("Failed to hash image file", "path", path, "error", err)
-		}
-		hash.Write([]byte{0})
-		file.Close()
-	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return buildSourceHash
 }
 
 func (s *Server) preloadContainers() {

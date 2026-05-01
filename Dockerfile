@@ -11,6 +11,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd cmd
 COPY internal internal
+RUN find -name '*.go' -type f -print0 \
+    | sort -z \
+    | xargs -0 sha256sum \
+    | sha256sum \
+    | awk '{print $1}' > .source-hash
 RUN ARCH=$(apk --print-arch) && \
     if [ "$ARCH" = "x86_64" ]; then \
         BPF_ARCH=x86; \
@@ -27,7 +32,7 @@ RUN ARCH=$(apk --print-arch) && \
 RUN go test ./...
 RUN CGO_ENABLED=0 \
     go build -a -installsuffix cgo \
-    -ldflags '-extldflags "-static" -s -w' \
+    -ldflags "-extldflags \"-static\" -s -w -X netstatd/internal/server.buildSourceHash=$(cat .source-hash)" \
     -tags 'netgo osusergo' \
     -o netstatd ./cmd/server
 
