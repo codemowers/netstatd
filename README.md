@@ -1,7 +1,7 @@
 # netstatd
 
-Real-time network connection monitoring for Kubernetes clusters using eBPF.
-
+Real-time network connection monitoring for Kubernetes clusters using eBPF. Live instance at 
+https://netstat.ee-lte-1.codemowers.io/
 ## Overview
 
 netstatd is a Kubernetes DaemonSet that provides real-time visibility into network connections across your cluster. It uses eBPF to efficiently capture TCP and UDP connection events from the kernel and correlates them with container metadata from containerd.
