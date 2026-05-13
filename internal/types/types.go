@@ -117,30 +117,32 @@ type ContainerInfo struct {
 // containerd content. It may include sensitive environment variables, so it is
 // only emitted when explicitly enabled by the server.
 type ImageMetainfo struct {
-	Image             string            `json:"image"`
-	TargetDigest      string            `json:"targetDigest,omitempty"`
-	TargetMediaType   string            `json:"targetMediaType,omitempty"`
-	ImageConfigDigest string            `json:"imageConfigDigest,omitempty"`
-	ImageConfigSize   int64             `json:"imageConfigSize,omitempty"`
-	Size              int64             `json:"size,omitempty"`
-	Created           string            `json:"created,omitempty"`
-	Author            string            `json:"author,omitempty"`
-	Architecture      string            `json:"architecture,omitempty"`
-	OS                string            `json:"os,omitempty"`
-	OSVersion         string            `json:"osVersion,omitempty"`
-	Variant           string            `json:"variant,omitempty"`
-	User              string            `json:"user,omitempty"`
-	Env               []string          `json:"env,omitempty"`
-	Entrypoint        []string          `json:"entrypoint,omitempty"`
-	Cmd               []string          `json:"cmd,omitempty"`
-	WorkingDir        string            `json:"workingDir,omitempty"`
-	ExposedPorts      []string          `json:"exposedPorts,omitempty"`
-	Volumes           []string          `json:"volumes,omitempty"`
-	Labels            map[string]string `json:"labels,omitempty"`
-	StopSignal        string            `json:"stopSignal,omitempty"`
-	RootFSType        string            `json:"rootfsType,omitempty"`
-	RootFSDiffIDs     []string          `json:"rootfsDiffIds,omitempty"`
-	History           []ImageHistory    `json:"history,omitempty"`
+	Image                     string            `json:"image"`
+	TargetDigest              string            `json:"targetDigest,omitempty"`
+	TargetMediaType           string            `json:"targetMediaType,omitempty"`
+	PlatformManifestDigest    string            `json:"platformManifestDigest,omitempty"`
+	PlatformManifestMediaType string            `json:"platformManifestMediaType,omitempty"`
+	ImageConfigDigest         string            `json:"imageConfigDigest,omitempty"`
+	ImageConfigSize           int64             `json:"imageConfigSize,omitempty"`
+	Size                      int64             `json:"size,omitempty"`
+	Created                   string            `json:"created,omitempty"`
+	Author                    string            `json:"author,omitempty"`
+	Architecture              string            `json:"architecture,omitempty"`
+	OS                        string            `json:"os,omitempty"`
+	OSVersion                 string            `json:"osVersion,omitempty"`
+	Variant                   string            `json:"variant,omitempty"`
+	User                      string            `json:"user,omitempty"`
+	Env                       []string          `json:"env,omitempty"`
+	Entrypoint                []string          `json:"entrypoint,omitempty"`
+	Cmd                       []string          `json:"cmd,omitempty"`
+	WorkingDir                string            `json:"workingDir,omitempty"`
+	ExposedPorts              []string          `json:"exposedPorts,omitempty"`
+	Volumes                   []string          `json:"volumes,omitempty"`
+	Labels                    map[string]string `json:"labels,omitempty"`
+	StopSignal                string            `json:"stopSignal,omitempty"`
+	RootFSType                string            `json:"rootfsType,omitempty"`
+	RootFSDiffIDs             []string          `json:"rootfsDiffIds,omitempty"`
+	History                   []ImageHistory    `json:"history,omitempty"`
 }
 
 type ImageHistory struct {

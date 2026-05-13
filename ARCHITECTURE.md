@@ -507,6 +507,7 @@ Sent when `--enable-image-metainfo` is set and the server can resolve a containe
 **Optional fields:**
 
 - `targetDigest`, `targetMediaType`: Top-level manifest or index descriptor
+- `platformManifestDigest`, `platformManifestMediaType`: Manifest descriptor selected for this host platform
 - `imageConfigDigest`, `imageConfigSize`: OCI image config descriptor
 - `size`: Packed image size reported by containerd
 - `created`, `author`, `architecture`, `os`, `osVersion`, `variant`

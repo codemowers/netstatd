@@ -3,6 +3,7 @@ package containerd
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,7 +14,11 @@ import (
 	"strings"
 
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/platforms"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"netstatd/internal/types"
 )
 
@@ -285,6 +290,10 @@ func extractImageMetainfo(ctx context.Context, image containerd.Image, requested
 	if err != nil {
 		return nil, err
 	}
+	platformManifestDesc, err := platformManifestDescriptor(ctx, image)
+	if err != nil {
+		platformManifestDesc = ocispec.Descriptor{}
+	}
 
 	size, err := image.Size(ctx)
 	if err != nil {
@@ -314,6 +323,10 @@ func extractImageMetainfo(ctx context.Context, image containerd.Image, requested
 		StopSignal:        spec.Config.StopSignal,
 		RootFSType:        spec.RootFS.Type,
 	}
+	if platformManifestDesc.Digest != "" {
+		meta.PlatformManifestDigest = platformManifestDesc.Digest.String()
+		meta.PlatformManifestMediaType = platformManifestDesc.MediaType
+	}
 	if spec.Created != nil {
 		meta.Created = spec.Created.Format("2006-01-02T15:04:05.999999999Z07:00")
 	}
@@ -334,6 +347,53 @@ func extractImageMetainfo(ctx context.Context, image containerd.Image, requested
 	}
 
 	return meta, nil
+}
+
+func platformManifestDescriptor(ctx context.Context, image containerd.Image) (ocispec.Descriptor, error) {
+	target := image.Target()
+	if images.IsManifestType(target.MediaType) {
+		return target, nil
+	}
+	if !images.IsIndexType(target.MediaType) {
+		return ocispec.Descriptor{}, fmt.Errorf("image target is not a manifest or index: %s", target.MediaType)
+	}
+
+	p, err := content.ReadBlob(ctx, image.ContentStore(), target)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
+
+	var idx ocispec.Index
+	if err := json.Unmarshal(p, &idx); err != nil {
+		return ocispec.Descriptor{}, err
+	}
+
+	platform := image.Platform()
+	if platform == nil {
+		platform = platforms.Default()
+	}
+
+	var matches []ocispec.Descriptor
+	for _, desc := range idx.Manifests {
+		if desc.Platform == nil || platform.Match(*desc.Platform) {
+			matches = append(matches, desc)
+		}
+	}
+	if len(matches) == 0 {
+		return ocispec.Descriptor{}, fmt.Errorf("no platform manifest matches host platform")
+	}
+
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Platform == nil {
+			return false
+		}
+		if matches[j].Platform == nil {
+			return true
+		}
+		return platform.Less(*matches[i].Platform, *matches[j].Platform)
+	})
+
+	return matches[0], nil
 }
 
 func sortedSetKeys(values map[string]struct{}) []string {
