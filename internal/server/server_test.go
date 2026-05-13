@@ -165,3 +165,67 @@ func TestCreateProcessMetainfoEventDropsContainerWithoutNetNS(t *testing.T) {
 		t.Fatalf("createProcessMetainfoEventFromResolved() = %#v, want nil", event)
 	}
 }
+
+func TestShouldOmitMetadataEvent(t *testing.T) {
+	s := &Server{options: Options{}}
+
+	omitted := []Event{
+		HostInfoEvent{EventType: "host.info"},
+		ContainerAddedEvent{EventType: "container.added"},
+		ContainerMetainfoEvent{EventType: "container.metainfo"},
+		ImageMetainfoEvent{EventType: "image.metainfo"},
+		JSONEvent{Data: []byte(`{"type":"container.deleted"}`)},
+	}
+	for _, event := range omitted {
+		if !s.shouldOmitMetadataEvent(event) {
+			t.Fatalf("shouldOmitMetadataEvent(%q) = false, want true", event.Type())
+		}
+	}
+
+	kept := []Event{
+		ConnectionEvent{EventType: "connection.event"},
+		ProcessMetainfoEvent{EventType: "process.metainfo"},
+		JSONEvent{Data: []byte(`{"type":"port.listening"}`)},
+	}
+	for _, event := range kept {
+		if s.shouldOmitMetadataEvent(event) {
+			t.Fatalf("shouldOmitMetadataEvent(%q) = true, want false", event.Type())
+		}
+	}
+}
+
+func TestShouldOmitMetadataEventsRespectsSplitOptions(t *testing.T) {
+	s := &Server{options: Options{
+		EnableHostInfo:          true,
+		EnableContainerEvents:   true,
+		EnableContainerMetainfo: true,
+		EnableImageMetainfo:     true,
+	}}
+
+	kept := []Event{
+		HostInfoEvent{EventType: "host.info"},
+		ContainerAddedEvent{EventType: "container.added"},
+		ContainerMetainfoEvent{EventType: "container.metainfo"},
+		ImageMetainfoEvent{EventType: "image.metainfo"},
+		JSONEvent{Data: []byte(`{"type":"container.deleted"}`)},
+	}
+	for _, event := range kept {
+		if s.shouldOmitMetadataEvent(event) {
+			t.Fatalf("shouldOmitMetadataEvent(%q) = true, want false", event.Type())
+		}
+	}
+}
+
+func TestShouldOmitMetadataEventsSplitsContainerLifecycleAndMetainfo(t *testing.T) {
+	s := &Server{options: Options{
+		EnableContainerEvents:   true,
+		EnableContainerMetainfo: false,
+	}}
+
+	if s.shouldOmitMetadataEvent(ContainerAddedEvent{EventType: "container.added"}) {
+		t.Fatal("container.added omitted when container events are enabled")
+	}
+	if !s.shouldOmitMetadataEvent(ContainerMetainfoEvent{EventType: "container.metainfo"}) {
+		t.Fatal("container.metainfo kept when container metainfo is disabled")
+	}
+}

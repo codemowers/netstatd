@@ -69,6 +69,13 @@ Then open http://localhost:6280 in your browser.
 - `--http-mux-port`: HTTP port for multiplexer server (default: 6280)
 - `--disable-tcp`: Disable TCP connection monitoring
 - `--enable-udp`: Enable UDP connection monitoring (disabled by default)
+- `--enable-host-info`: Send `host.info` events (enabled by default)
+- `--disable-host-info`: Do not send `host.info` events
+- `--enable-container-events`: Send `container.added` and `container.deleted` events (enabled by default)
+- `--disable-container-events`: Do not send `container.added` or `container.deleted` events
+- `--enable-container-metainfo`: Send `container.metainfo` events (enabled by default)
+- `--disable-container-metainfo`: Do not send `container.metainfo` events
+- `--enable-image-metainfo`: Extract OCI image config metadata from containerd and send `image.metainfo` events (disabled by default)
 
 **Note:** Loopback connections (127.0.0.0/8 and ::1) are always filtered at the eBPF kernel level for performance.
 
@@ -95,6 +102,7 @@ Then open http://localhost:6280 in your browser.
 - `port.listening` - Listening port discovered
   - Includes: protocol (string), IP, port, network namespace, host-netns flag, and pod metadata when resolved
 - `process.metainfo` - PID metadata for executable, cgroup slice, container UID, and network namespace
+- `image.metainfo` - OCI image config metadata such as labels, env, entrypoint, cmd, rootfs diff IDs, and history when `--enable-image-metainfo` is set
 
 ## Web Interface
 

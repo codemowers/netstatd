@@ -53,6 +53,7 @@ type clientWriter struct {
 	broadcastedPorts map[string]bool
 	sentProcessPID   map[uint32]bool
 	sentContainerUID map[string]bool
+	sentImage        map[string]bool
 }
 
 // JSONEvent is a wrapper for raw JSON that implements Event
@@ -85,6 +86,7 @@ type Server struct {
 	hostIPs       []string
 	imageHash     string
 	fanoutService string
+	options       Options
 
 	containers map[string]*types.ContainerInfo // keyed by container UID
 	mu         sync.RWMutex
@@ -104,7 +106,26 @@ type Server struct {
 	metricsMu           sync.RWMutex
 }
 
+type Options struct {
+	EnableHostInfo          bool
+	EnableContainerEvents   bool
+	EnableContainerMetainfo bool
+	EnableImageMetainfo     bool
+	PodHTTPPort             string
+}
+
 func NewServer(ctrdClient *containerd.Client, tracer *ebpf.Tracer, fanoutService string) *Server {
+	return NewServerWithOptions(ctrdClient, tracer, fanoutService, Options{
+		EnableHostInfo:          true,
+		EnableContainerEvents:   true,
+		EnableContainerMetainfo: true,
+	})
+}
+
+func NewServerWithOptions(ctrdClient *containerd.Client, tracer *ebpf.Tracer, fanoutService string, options Options) *Server {
+	if options.PodHTTPPort == "" {
+		options.PodHTTPPort = "5280"
+	}
 
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
@@ -144,6 +165,7 @@ func NewServer(ctrdClient *containerd.Client, tracer *ebpf.Tracer, fanoutService
 		hostIPs:             hostIPs,
 		imageHash:           imageHash,
 		fanoutService:       fanoutService,
+		options:             options,
 		containers:          make(map[string]*types.ContainerInfo),
 		clients:             make(map[*websocket.Conn]*clientWriter),
 		broadcast:           make(chan Event, 1000),
@@ -436,19 +458,21 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send host.info directly before starting writer goroutine
-	hostInfoEvent := &HostInfoEvent{
-		EventType: "host.info",
-		Timestamp: time.Now().Format(time.RFC3339),
-		NodeName:  s.nodeName,
-		HostIPs:   s.hostIPs,
-		HostNetNS: hostNetNSInt,
-		ImageHash: s.imageHash,
-	}
-	if err := conn.WriteJSON(hostInfoEvent); err != nil {
-		slog.Error("Failed to send host.info event", "error", err)
-		conn.Close()
-		return
+	if s.options.EnableHostInfo {
+		// Send host.info directly before starting writer goroutine
+		hostInfoEvent := &HostInfoEvent{
+			EventType: "host.info",
+			Timestamp: time.Now().Format(time.RFC3339),
+			NodeName:  s.nodeName,
+			HostIPs:   s.hostIPs,
+			HostNetNS: hostNetNSInt,
+			ImageHash: s.imageHash,
+		}
+		if err := conn.WriteJSON(hostInfoEvent); err != nil {
+			slog.Error("Failed to send host.info event", "error", err)
+			conn.Close()
+			return
+		}
 	}
 
 	// Create client writer
@@ -460,6 +484,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		broadcastedPorts: make(map[string]bool),
 		sentProcessPID:   make(map[uint32]bool),
 		sentContainerUID: make(map[string]bool),
+		sentImage:        make(map[string]bool),
 	}
 
 	// Register client
@@ -549,22 +574,30 @@ func (s *Server) sendInitialState(conn *websocket.Conn, cw *clientWriter) {
 
 	// host.info is already sent directly in handleWebSocket, skip here
 
-	s.mu.RLock()
-	containers := make([]*types.ContainerInfo, 0, len(s.containers))
-	for _, c := range s.containers {
-		containers = append(containers, c)
-	}
-	s.mu.RUnlock()
-
-	for _, container := range containers {
-		event := s.containerToEvent(container)
-		if err := s.writeEventToClient(cw, event); err != nil {
-			slog.Debug("Failed to send initial container event", "remote", conn.RemoteAddr(), "error", err)
-			return
+	if s.options.EnableContainerEvents || s.options.EnableImageMetainfo {
+		s.mu.RLock()
+		containers := make([]*types.ContainerInfo, 0, len(s.containers))
+		for _, c := range s.containers {
+			containers = append(containers, c)
 		}
-	}
+		s.mu.RUnlock()
 
-	slog.Debug("Sent initial containers", "count", len(containers))
+		for _, container := range containers {
+			if s.options.EnableContainerEvents {
+				event := s.containerToEvent(container)
+				if err := s.writeEventToClient(cw, event); err != nil {
+					slog.Debug("Failed to send initial container event", "remote", conn.RemoteAddr(), "error", err)
+					return
+				}
+			}
+			if !s.writeImageMetainfoForClient(cw, container) {
+				slog.Debug("Failed to send initial image.metainfo event", "remote", conn.RemoteAddr())
+				return
+			}
+		}
+
+		slog.Debug("Sent initial containers", "count", len(containers))
+	}
 
 	// Scan all PIDs in /proc to find all network namespaces
 	seenNetNS := make(map[uint64]bool)
@@ -923,6 +956,10 @@ func parseHexIPv6(hexIP string) (string, error) {
 }
 
 func (s *Server) broadcastContainerAdded(container *types.ContainerInfo) {
+	if !s.options.EnableContainerEvents {
+		return
+	}
+
 	select {
 	case s.broadcast <- s.containerToEvent(container):
 		// Counter will be incremented in handleBroadcast when event is sent
@@ -1008,6 +1045,10 @@ func (s *Server) handleConnectionEvent(event types.ConnEvent) {
 }
 
 func (s *Server) createContainerMetainfoEvent(containerUID string) *ContainerMetainfoEvent {
+	if !s.options.EnableContainerMetainfo {
+		return nil
+	}
+
 	if containerUID == "" {
 		return nil
 	}
@@ -1047,6 +1088,66 @@ func (s *Server) createContainerMetainfoEvent(containerUID string) *ContainerMet
 	}
 
 	return event
+}
+
+func (s *Server) createImageMetainfoEvent(container *types.ContainerInfo) *ImageMetainfoEvent {
+	if !s.options.EnableImageMetainfo || container == nil || container.Image == "" || s.ctrdClient == nil {
+		return nil
+	}
+
+	imageInfo, err := s.ctrdClient.GetImageMetainfo(container.ContainerdNamespace, container.Image, container.Labels)
+	if err != nil {
+		slog.Debug("Failed to extract image metadata",
+			"image", container.Image,
+			"containerdNamespace", container.ContainerdNamespace,
+			"containerUID", container.ID,
+			"error", err,
+		)
+		return nil
+	}
+
+	return &ImageMetainfoEvent{
+		EventType:     "image.metainfo",
+		Timestamp:     time.Now().Format(time.RFC3339),
+		NodeName:      s.nodeName,
+		ImageMetainfo: *imageInfo,
+	}
+}
+
+func (s *Server) writeImageMetainfoForClient(cw *clientWriter, container *types.ContainerInfo) bool {
+	if !s.options.EnableImageMetainfo || container == nil || container.Image == "" {
+		return true
+	}
+
+	imageKey := container.Image
+	if imageKey == "" {
+		return true
+	}
+	if cw.sentImage[imageKey] {
+		return true
+	}
+	if cw.sentImage == nil {
+		cw.sentImage = make(map[string]bool)
+	}
+
+	event := s.createImageMetainfoEvent(container)
+	if event == nil {
+		cw.sentImage[imageKey] = true
+		return true
+	}
+	if event.ImageConfigDigest != "" {
+		imageKey = event.ImageConfigDigest
+		if cw.sentImage[imageKey] {
+			return true
+		}
+	}
+
+	if err := s.writeEventToClient(cw, event); err != nil {
+		return false
+	}
+	cw.sentImage[container.Image] = true
+	cw.sentImage[imageKey] = true
+	return true
 }
 
 func (s *Server) createProcessMetainfoEvent(pid uint32) *ProcessMetainfoEvent {
@@ -1104,6 +1205,10 @@ func (s *Server) createProcessMetainfoEventFromResolved(pid uint32, exe string, 
 }
 
 func (s *Server) fetchAndSendContainerMetainfo(containerUID, podUID string, pid uint32, cgroupSlice string) {
+	if !s.options.EnableContainerMetainfo {
+		return
+	}
+
 	// Try to get container info by container UID first
 	var containerInfo *types.ContainerInfo
 	var err error
@@ -1310,6 +1415,8 @@ func (s *Server) clientWriterLoop(cw *clientWriter) {
 				s.handleConnectionAcceptedEventForClient(cw, e)
 			case *ContainerMetainfoEvent:
 				s.writeEventToClient(cw, e)
+			case *ImageMetainfoEvent:
+				s.writeEventToClient(cw, e)
 			case *ProcessMetainfoEvent:
 				s.writeEventToClient(cw, e)
 				cw.sentProcessPID[e.PID] = true
@@ -1379,6 +1486,9 @@ func (s *Server) handleConnectionAcceptedEventForClient(cw *clientWriter, event 
 					s.writeEventToClient(cw, containerEvent)
 					cw.sentContainerUID[containerUID] = true
 				}
+				if !s.writeImageMetainfoForClient(cw, containerInfo) {
+					return
+				}
 			}
 		}
 
@@ -1416,6 +1526,10 @@ func (s *Server) handleConnectionAcceptedEventForClient(cw *clientWriter, event 
 }
 
 func (s *Server) writeEventToClient(cw *clientWriter, event Event) error {
+	if s.shouldOmitMetadataEvent(event) {
+		return nil
+	}
+
 	// Extract event type for metrics
 	// All events have a Type() method
 	s.incWSEventCounter(event.Type())
@@ -1425,6 +1539,25 @@ func (s *Server) writeEventToClient(cw *clientWriter, event Event) error {
 		return cw.conn.WriteMessage(websocket.TextMessage, je.Data)
 	}
 	return cw.conn.WriteJSON(event)
+}
+
+func (s *Server) shouldOmitMetadataEvent(event Event) bool {
+	if event == nil {
+		return false
+	}
+
+	switch event.Type() {
+	case "host.info":
+		return !s.options.EnableHostInfo
+	case "container.added", "container.deleted":
+		return !s.options.EnableContainerEvents
+	case "container.metainfo":
+		return !s.options.EnableContainerMetainfo
+	case "image.metainfo":
+		return !s.options.EnableImageMetainfo
+	default:
+		return false
+	}
 }
 
 func enqueueClientEvent(cw *clientWriter, event Event) bool {
@@ -1564,7 +1697,7 @@ func (s *Server) handleFanoutWebSocket(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			s.connectToPod(podCtx, ip, "5280", aggregatedEvents)
+			s.connectToPod(podCtx, ip, s.options.PodHTTPPort, aggregatedEvents)
 		}(podIP)
 	}
 
@@ -1612,6 +1745,10 @@ func (s *Server) handleFanoutWebSocket(w http.ResponseWriter, r *http.Request) {
 	writeMutex := &sync.Mutex{}
 	go func() {
 		for event := range aggregatedEvents {
+			if s.shouldOmitMetadataEvent(event) {
+				continue
+			}
+
 			writeMutex.Lock()
 			var err error
 			// Handle JSONEvent specially - write raw bytes

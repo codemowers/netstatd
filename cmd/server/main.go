@@ -25,6 +25,13 @@ func main() {
 	httpMuxPort := flag.String("http-mux-port", "6280", "HTTP port for multiplexer server")
 	disableTCP := flag.Bool("disable-tcp", false, "Disable TCP connection monitoring")
 	enableUDP := flag.Bool("enable-udp", false, "Enable UDP connection monitoring")
+	enableHostInfo := flag.Bool("enable-host-info", true, "Send host.info metadata events")
+	disableHostInfo := flag.Bool("disable-host-info", false, "Do not send host.info metadata events")
+	enableContainerEvents := flag.Bool("enable-container-events", true, "Send container.added and container.deleted metadata events")
+	disableContainerEvents := flag.Bool("disable-container-events", false, "Do not send container.added or container.deleted metadata events")
+	enableContainerMetainfo := flag.Bool("enable-container-metainfo", true, "Send container.metainfo metadata events")
+	disableContainerMetainfo := flag.Bool("disable-container-metainfo", false, "Do not send container.metainfo metadata events")
+	enableImageMetainfo := flag.Bool("enable-image-metainfo", false, "Extract OCI image config metadata from containerd and send image.metainfo events")
 
 	// Work around Docker/containerd issue where os.Args[1] is the program name again
 	// If os.Args[1] looks like a program path, skip it
@@ -49,6 +56,13 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Parsed flags:\n")
 	fmt.Fprintf(os.Stderr, "  disable-tcp=%v\n", *disableTCP)
 	fmt.Fprintf(os.Stderr, "  enable-udp=%v\n", *enableUDP)
+	fmt.Fprintf(os.Stderr, "  enable-host-info=%v\n", *enableHostInfo)
+	fmt.Fprintf(os.Stderr, "  disable-host-info=%v\n", *disableHostInfo)
+	fmt.Fprintf(os.Stderr, "  enable-container-events=%v\n", *enableContainerEvents)
+	fmt.Fprintf(os.Stderr, "  disable-container-events=%v\n", *disableContainerEvents)
+	fmt.Fprintf(os.Stderr, "  enable-container-metainfo=%v\n", *enableContainerMetainfo)
+	fmt.Fprintf(os.Stderr, "  disable-container-metainfo=%v\n", *disableContainerMetainfo)
+	fmt.Fprintf(os.Stderr, "  enable-image-metainfo=%v\n", *enableImageMetainfo)
 	fmt.Fprintf(os.Stderr, "  log-level=%v\n", *logLevel)
 
 	// Set up structured logging with slog
@@ -73,8 +87,6 @@ func main() {
 	}
 
 	fmt.Fprintf(os.Stderr, "Setting log level to: %v (numeric: %d)\n", level, level)
-	fmt.Fprintf(os.Stderr, "Command line flags: http-port=%s http-mux-port=%s disable-tcp=%v enable-udp=%v\n",
-		*httpPort, *httpMuxPort, *disableTCP, *enableUDP)
 
 	// Build config bitmap
 	var configFlags uint32
@@ -84,6 +96,13 @@ func main() {
 	if !*enableUDP {
 		configFlags |= ebpf.ConfigDisableUDP
 	}
+
+	hostInfoEnabled := *enableHostInfo && !*disableHostInfo
+	containerEventsEnabled := *enableContainerEvents && !*disableContainerEvents
+	containerMetainfoEnabled := *enableContainerMetainfo && !*disableContainerMetainfo
+
+	fmt.Fprintf(os.Stderr, "Command line flags: http-port=%s http-mux-port=%s disable-tcp=%v enable-udp=%v enable-host-info=%v enable-container-events=%v enable-container-metainfo=%v enable-image-metainfo=%v\n",
+		*httpPort, *httpMuxPort, *disableTCP, *enableUDP, hostInfoEnabled, containerEventsEnabled, containerMetainfoEnabled, *enableImageMetainfo)
 
 	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: level,
@@ -171,7 +190,13 @@ func main() {
 	slog.Debug("eBPF tracer initialized successfully")
 
 	// Initialize HTTP/WebSocket server
-	srv := server.NewServer(ctrdClient, tracer, fanoutService)
+	srv := server.NewServerWithOptions(ctrdClient, tracer, fanoutService, server.Options{
+		EnableHostInfo:          hostInfoEnabled,
+		EnableContainerEvents:   containerEventsEnabled,
+		EnableContainerMetainfo: containerMetainfoEnabled,
+		EnableImageMetainfo:     *enableImageMetainfo,
+		PodHTTPPort:             *httpPort,
+	})
 
 	slog.Info("All ports are now listening and ready to accept connections")
 	slog.Info("Starting HTTP servers...")

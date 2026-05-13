@@ -1,6 +1,7 @@
 package server
 
 import (
+	"netstatd/internal/types"
 	"time"
 )
 
@@ -54,6 +55,18 @@ type ContainerMetainfoEvent struct {
 }
 
 func (e ContainerMetainfoEvent) Type() string {
+	return e.EventType
+}
+
+// ImageMetainfoEvent represents an image.metainfo event.
+type ImageMetainfoEvent struct {
+	EventType string `json:"type"`
+	Timestamp string `json:"timestamp"`
+	NodeName  string `json:"nodeName,omitempty"`
+	types.ImageMetainfo
+}
+
+func (e ImageMetainfoEvent) Type() string {
 	return e.EventType
 }
 

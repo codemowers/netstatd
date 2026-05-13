@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -238,6 +239,124 @@ func (c *Client) getContainerInfo(ctx context.Context, namespace string, contain
 	}
 
 	return containerInfo, nil
+}
+
+// GetImageMetainfo extracts OCI image configuration metadata for a container
+// image reference from containerd. It first tries the exact container image
+// reference and then falls back to the CRI image-name label when present.
+func (c *Client) GetImageMetainfo(namespace, imageRef string, labels map[string]string) (*types.ImageMetainfo, error) {
+	if imageRef == "" {
+		return nil, fmt.Errorf("image reference is empty")
+	}
+	if namespace == "" {
+		namespace = "k8s.io"
+	}
+
+	nsCtx := namespaces.WithNamespace(c.ctx, namespace)
+	refs := []string{imageRef}
+	if criImageName := labels["io.kubernetes.cri.image-name"]; criImageName != "" && criImageName != imageRef {
+		refs = append(refs, criImageName)
+	}
+
+	var lastErr error
+	for _, ref := range refs {
+		image, err := c.client.GetImage(nsCtx, ref)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return extractImageMetainfo(nsCtx, image, imageRef)
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("image not found: %s", imageRef)
+}
+
+func extractImageMetainfo(ctx context.Context, image containerd.Image, requestedRef string) (*types.ImageMetainfo, error) {
+	spec, err := image.Spec(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	target := image.Target()
+	configDesc, err := image.Config(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	size, err := image.Size(ctx)
+	if err != nil {
+		size = 0
+	}
+
+	meta := &types.ImageMetainfo{
+		Image:             requestedRef,
+		TargetDigest:      target.Digest.String(),
+		TargetMediaType:   target.MediaType,
+		ImageConfigDigest: configDesc.Digest.String(),
+		ImageConfigSize:   configDesc.Size,
+		Size:              size,
+		Author:            spec.Author,
+		Architecture:      spec.Architecture,
+		OS:                spec.OS,
+		OSVersion:         spec.OSVersion,
+		Variant:           spec.Variant,
+		User:              spec.Config.User,
+		Env:               append([]string(nil), spec.Config.Env...),
+		Entrypoint:        append([]string(nil), spec.Config.Entrypoint...),
+		Cmd:               append([]string(nil), spec.Config.Cmd...),
+		WorkingDir:        spec.Config.WorkingDir,
+		ExposedPorts:      sortedSetKeys(spec.Config.ExposedPorts),
+		Volumes:           sortedSetKeys(spec.Config.Volumes),
+		Labels:            copyStringMap(spec.Config.Labels),
+		StopSignal:        spec.Config.StopSignal,
+		RootFSType:        spec.RootFS.Type,
+	}
+	if spec.Created != nil {
+		meta.Created = spec.Created.Format("2006-01-02T15:04:05.999999999Z07:00")
+	}
+	for _, diffID := range spec.RootFS.DiffIDs {
+		meta.RootFSDiffIDs = append(meta.RootFSDiffIDs, diffID.String())
+	}
+	for _, entry := range spec.History {
+		history := types.ImageHistory{
+			CreatedBy:  entry.CreatedBy,
+			Author:     entry.Author,
+			Comment:    entry.Comment,
+			EmptyLayer: entry.EmptyLayer,
+		}
+		if entry.Created != nil {
+			history.Created = entry.Created.Format("2006-01-02T15:04:05.999999999Z07:00")
+		}
+		meta.History = append(meta.History, history)
+	}
+
+	return meta, nil
+}
+
+func sortedSetKeys(values map[string]struct{}) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func extractContainerLabels(labels map[string]string) map[string]string {

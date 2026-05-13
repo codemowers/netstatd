@@ -42,6 +42,8 @@ function handleEvent(event) {
     case "container.metainfo":
       handleContainerMetainfo(event);
       break;
+    case "image.metainfo":
+      break;
     case "process.metainfo":
       handleProcessMetainfo(event);
       break;

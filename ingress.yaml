@@ -25,8 +25,8 @@ spec:
     app: netstatd
   ports:
     - name: http-mux
-      port: 6280
-      targetPort: 6280
+      port: 6281
+      targetPort: 6281
       protocol: TCP
 ---
 apiVersion: networking.k8s.io/v1
@@ -51,4 +51,4 @@ spec:
               service:
                 name: netstatd-mux
                 port:
-                  number: 6280
+                  number: 6281

@@ -266,6 +266,7 @@ type clientWriter struct {
 - `broadcastedPorts` — Tracks which `port.listening` events have already been sent to this client. Prevents duplicate port rows in the UI when the same port is discovered multiple times (e.g., from multiple connection events in the same netns).
 - `sentProcessPID` — Tracks which `process.metainfo` events have already been sent to this client.
 - `sentContainerUID` — Tracks which `container.metainfo` events have already been sent to this client.
+- `sentImage` — Tracks which `image.metainfo` events have already been sent to this client.
 
 **Lifecycle:** `clientWriter` is created when a client connects and deleted when it disconnects. Cleanup is automatic.
 
@@ -465,7 +466,7 @@ Sent for accepted inbound TCP connections. This is the PID-bearing companion eve
 - `remotePort`: Remote port number (if non-zero)
 - `sockCookie`: Socket cookie if available; accept kretprobe events may use 0
 
-**Note:** The WebSocket writer sends `container.metainfo` and `process.metainfo` before `connection.accepted` when it has not already sent metadata for that PID. In the browser, this event enriches existing connection rows and listening port rows; it does not create a new connection row by itself.
+**Note:** The WebSocket writer sends `container.metainfo`, optional `image.metainfo`, and `process.metainfo` before `connection.accepted` when it has not already sent metadata for that PID. In the browser, this event enriches existing connection rows and listening port rows; it does not create a new connection row by itself.
 
 ### 6. `port.listening`
 
@@ -492,7 +493,28 @@ Sent when a listening port is discovered.
 
 **Note:** PID, exe, and cgroupSlice are not included in `port.listening` because the scanning PID may be a namespace representative rather than the process that owns every listening socket. The browser fills the Last PID and cgroup columns from `connection.accepted` plus `process.metainfo`, keyed by `nodeName/protocol/port/netns`.
 
-### 7. `process.metainfo`
+### 7. `image.metainfo`
+
+Sent when `--enable-image-metainfo` is set and the server can resolve a container image through containerd. Disabled by default because OCI image config can include environment variables and long build history.
+
+**Required fields:**
+
+- `type`: "image.metainfo"
+- `timestamp`: ISO 8601 timestamp
+- `nodeName`: Node name
+- `image`: Container image reference
+
+**Optional fields:**
+
+- `targetDigest`, `targetMediaType`: Top-level manifest or index descriptor
+- `imageConfigDigest`, `imageConfigSize`: OCI image config descriptor
+- `size`: Packed image size reported by containerd
+- `created`, `author`, `architecture`, `os`, `osVersion`, `variant`
+- `user`, `env`, `entrypoint`, `cmd`, `workingDir`, `exposedPorts`, `volumes`, `labels`, `stopSignal`
+- `rootfsType`, `rootfsDiffIds`
+- `history`: Build history entries with `created`, `createdBy`, `author`, `comment`, and `emptyLayer`
+
+### 8. `process.metainfo`
 
 Sent to resolve PID to executable, cgroup slice, container UID, and netns information.
 
@@ -520,7 +542,7 @@ Sent to resolve PID to executable, cgroup slice, container UID, and netns inform
 
 1. TCP state transitions arrive as `connection.event` and update rows by socket cookie, or by endpoint tuple when no cookie is available.
 2. Accepted inbound TCP connections arrive as `connection.accepted` with PID.
-3. Before a PID-bearing accepted event is written to a client, the server sends missing `container.metainfo` and `process.metainfo` for that PID.
+3. Before a PID-bearing accepted event is written to a client, the server sends missing `container.metainfo`, optional `image.metainfo`, and `process.metainfo` for that PID.
 4. The browser stores process metadata in `processMetadata` keyed by `nodeName/pid`.
 5. `connection.accepted` enriches matching connection rows and listening port rows. Listening port PID metadata is keyed by `nodeName/protocol/port/netns`.
 
@@ -529,6 +551,7 @@ Sent to resolve PID to executable, cgroup slice, container UID, and netns inform
 - **Ports:** `port.listening` events are deduplicated per client using `broadcastedPorts` map (key: `nodeName:protocol:ip:port:netns`).
 - **Connection Rows:** TCP state events use `sockCookie` as the preferred browser row key; when no cookie is available, the browser falls back to a node/protocol/sorted-endpoint tuple.
 - **Process Metadata:** `process.metainfo` is sent once per PID per client using `sentProcessPID` map.
+- **Image Metadata:** `image.metainfo` is sent once per image/config digest per client using `sentImage` map.
 - **Network Namespace Scanning:** Network namespace scanning for listening ports is triggered once per netns per client using `scannedNetNS` map.
 
 **PID-based Container Matching:**
@@ -580,6 +603,13 @@ Command-line flags:
 - `--http-mux-port` - HTTP port for multiplexer server (default: 6280)
 - `--disable-tcp` - Disable TCP connection monitoring
 - `--enable-udp` - Enable UDP connection monitoring (disabled by default)
+- `--enable-host-info` - Send `host.info` events (enabled by default)
+- `--disable-host-info` - Do not send `host.info` events
+- `--enable-container-events` - Send `container.added` and `container.deleted` events (enabled by default)
+- `--disable-container-events` - Do not send `container.added` or `container.deleted` events
+- `--enable-container-metainfo` - Send `container.metainfo` events (enabled by default)
+- `--disable-container-metainfo` - Do not send `container.metainfo` events
+- `--enable-image-metainfo` - Extract OCI image config metadata from containerd and send `image.metainfo` events (disabled by default)
 
 **Note:** Loopback connections (127.0.0.0/8 and ::1) are always filtered at the eBPF kernel level for performance.
 
