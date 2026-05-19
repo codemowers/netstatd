@@ -1,12 +1,10 @@
 package containerd
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"regexp"
 	"sort"
@@ -431,27 +429,6 @@ func extractContainerLabels(labels map[string]string) map[string]string {
 	return result
 }
 
-// getCgroupSlice returns the cgroup slice string for a PID
-func getCgroupSlice(pid uint32) string {
-	if pid == 0 {
-		return ""
-	}
-
-	// Read /proc/<pid>/cgroup
-	cgroupPath := fmt.Sprintf("%s/%d/cgroup", procPath, pid)
-	data, err := os.ReadFile(cgroupPath)
-	if err != nil {
-		return ""
-	}
-
-	// Return the first line as-is, no parsing
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) > 0 {
-		return lines[0]
-	}
-	return ""
-}
-
 // parseNetNSIdentifier extracts the inode number from net:[4026531840] format
 func parseNetNSIdentifier(netns string) uint64 {
 	if netns == "" {
@@ -474,136 +451,6 @@ func parseNetNSIdentifier(netns string) uint64 {
 		return 0
 	}
 	return id
-}
-
-// parseNetFile parses /proc/<pid>/net/{tcp,tcp6,udp,udp6} to extract local IP addresses
-func parseNetFile(path string, isIPv6 bool) ([]string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	ipSet := make(map[string]bool)
-	scanner := bufio.NewScanner(file)
-
-	// Skip header line
-	if !scanner.Scan() {
-		return nil, nil
-	}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-
-		// Field 1 is local_address (hex IP:port)
-		localAddr := fields[1]
-
-		// Parse local address
-		parts := strings.Split(localAddr, ":")
-		if len(parts) != 2 {
-			continue
-		}
-
-		hexIP := parts[0]
-
-		// Parse IP address
-		var ip string
-		if isIPv6 {
-			// IPv6 address (32 hex chars)
-			parsedIP, err := parseHexIPv6(hexIP)
-			if err != nil {
-				continue
-			}
-			ip = parsedIP
-		} else {
-			// IPv4 address (8 hex chars)
-			parsedIP, err := parseHexIPv4(hexIP)
-			if err != nil {
-				continue
-			}
-			ip = parsedIP
-		}
-
-		// Skip loopback addresses (127.x.x.x for IPv4, ::1 for IPv6)
-		if strings.HasPrefix(ip, "127.") || ip == "::1" {
-			continue
-		}
-
-		// Skip unspecified addresses (0.0.0.0 for IPv4, :: for IPv6)
-		if ip == "0.0.0.0" || ip == "::" {
-			continue
-		}
-
-		// For IPv4, make sure it's not a mapped IPv6 address (::ffff:)
-		if !isIPv6 && strings.HasPrefix(ip, "::ffff:") {
-			// Extract the IPv4 part
-			ipv4 := strings.TrimPrefix(ip, "::ffff:")
-			ipSet[ipv4] = true
-		} else {
-			ipSet[ip] = true
-		}
-	}
-
-	// Convert set to slice
-	var ips []string
-	for ip := range ipSet {
-		ips = append(ips, ip)
-	}
-
-	return ips, scanner.Err()
-}
-
-// parseHexIPv4 converts hex IPv4 address from /proc/net files (little-endian) to string
-func parseHexIPv4(hexIP string) (string, error) {
-	if len(hexIP) != 8 {
-		return "", fmt.Errorf("invalid hex IP length: %d", len(hexIP))
-	}
-
-	val, err := strconv.ParseUint(hexIP, 16, 32)
-	if err != nil {
-		return "", err
-	}
-
-	// Convert little-endian to IP
-	// The bytes in the hex string are in network byte order (big-endian) for each 32-bit word
-	// But the entire 32-bit value is stored in little-endian format
-	// So we need to reverse the bytes
-	ip := net.IPv4(
-		byte(val>>24),
-		byte(val>>16),
-		byte(val>>8),
-		byte(val),
-	)
-	return ip.String(), nil
-}
-
-// parseHexIPv6 converts hex IPv6 address from /proc/net files to string
-func parseHexIPv6(hexIP string) (string, error) {
-	if len(hexIP) != 32 {
-		return "", fmt.Errorf("invalid hex IPv6 length: %d", len(hexIP))
-	}
-
-	// Parse 4 32-bit words in little-endian format
-	var bytes [16]byte
-	for i := 0; i < 4; i++ {
-		word := hexIP[i*8 : (i+1)*8]
-		val, err := strconv.ParseUint(word, 16, 32)
-		if err != nil {
-			return "", err
-		}
-		// Convert little-endian word to bytes
-		bytes[i*4] = byte(val)
-		bytes[i*4+1] = byte(val >> 8)
-		bytes[i*4+2] = byte(val >> 16)
-		bytes[i*4+3] = byte(val >> 24)
-	}
-
-	ip := net.IP(bytes[:])
-	return ip.String(), nil
 }
 
 // Close closes the containerd client

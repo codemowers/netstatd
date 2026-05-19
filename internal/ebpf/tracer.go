@@ -161,8 +161,6 @@ func (t *Tracer) readEvents() {
 				"error", err,
 				"raw_bytes", fmt.Sprintf("%x", record.RawSample),
 			)
-			// Exit the program on invalid eBPF data
-			//panic(fmt.Sprintf("Invalid eBPF event data: %v", err))
 			continue
 		}
 
@@ -326,17 +324,6 @@ func (t *Tracer) Close() error {
 }
 
 // Helper functions
-func intToIP(ip uint32) string {
-	// IP addresses in the kernel are stored in network byte order (big-endian)
-	// but we read them as little-endian uint32, so we need to reverse the bytes
-	return fmt.Sprintf("%d.%d.%d.%d",
-		byte(ip),
-		byte(ip>>8),
-		byte(ip>>16),
-		byte(ip>>24),
-	)
-}
-
 func stateToString(state uint32, protocol uint8) string {
 	if protocol == types.ProtocolUDP {
 		return "ESTABLISHED"

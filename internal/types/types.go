@@ -49,11 +49,6 @@ func IntToIP(ip uint32) net.IP {
 	)
 }
 
-// Helper function to convert uint32 to net.IP
-func intToIP(ip uint32) net.IP {
-	return IntToIP(ip)
-}
-
 // LocalRemoteIPs returns the decoded local and remote IP addresses.
 func (ce *ConnEvent) LocalRemoteIPs() (string, string) {
 	isAllZero := func(b []uint8) bool {

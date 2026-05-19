@@ -1,9 +1,6 @@
 package server
 
-import (
-	"netstatd/internal/types"
-	"time"
-)
+import "netstatd/internal/types"
 
 // Event represents a WebSocket event
 type Event interface {
@@ -134,9 +131,4 @@ type PortListeningEvent struct {
 
 func (e PortListeningEvent) Type() string {
 	return e.EventType
-}
-
-// Helper function to create timestamp
-func timestamp() string {
-	return time.Now().Format(time.RFC3339)
 }

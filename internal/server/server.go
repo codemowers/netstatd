@@ -1372,30 +1372,6 @@ func (s *Server) broadcastListeningPort(port *PortListeningEvent, containerUID s
 	}
 }
 
-func toUint64(v interface{}) (uint64, bool) {
-	f, ok := v.(float64)
-	if !ok {
-		return 0, false
-	}
-	return uint64(f), true
-}
-
-func toUint32(v interface{}) (uint32, bool) {
-	f, ok := v.(float64)
-	if !ok {
-		return 0, false
-	}
-	return uint32(f), true
-}
-
-func toUint16(v interface{}) (uint16, bool) {
-	f, ok := v.(float64)
-	if !ok {
-		return 0, false
-	}
-	return uint16(f), true
-}
-
 func (s *Server) clientWriterLoop(cw *clientWriter) {
 	defer cw.conn.Close()
 
