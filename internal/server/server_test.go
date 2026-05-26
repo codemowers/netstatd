@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"netstatd/internal/types"
 )
 
 func TestParseProcessNameFromStatus(t *testing.T) {
@@ -132,6 +135,106 @@ func TestConnectionAcceptedEventRequiresPIDJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), `"pid":1234`) {
 		t.Fatalf("connection.accepted JSON missing pid field: %s", payload)
+	}
+}
+
+func TestTrafficSamplesAggregateForConfirmedTCPListeningPort(t *testing.T) {
+	s := &Server{
+		nodeName:          "node-a",
+		options:           Options{EnableByteCountEvents: true, EnableByteCountMetrics: true},
+		traffic:           make(map[trafficKey]*trafficAggregate),
+		trafficCounters:   make(map[trafficMetricKey]*trafficMetricCounters),
+		listeningTCPPorts: make(map[listeningPortKey]struct{}),
+	}
+	s.rememberListeningTCPPort("10.0.0.1", 443)
+
+	s.recordTrafficSample(types.ByteEvent{
+		Protocol:      types.ProtocolTCP,
+		Sport:         443,
+		Dport:         49152,
+		ByteCount:     100,
+		ByteDirection: types.ByteDirectionIn,
+	}, "10.0.0.1", "10.0.0.2")
+	s.recordTrafficSample(types.ByteEvent{
+		Protocol:      types.ProtocolTCP,
+		Sport:         443,
+		Dport:         49152,
+		ByteCount:     50,
+		ByteDirection: types.ByteDirectionOut,
+	}, "10.0.0.1", "10.0.0.2")
+
+	samples := s.drainTrafficSamples(time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC))
+	if len(samples) != 1 {
+		t.Fatalf("drainTrafficSamples() returned %d samples, want 1", len(samples))
+	}
+	sample := samples[0]
+	if sample.Type() != "traffic.sample" {
+		t.Fatalf("sample.Type() = %q, want traffic.sample", sample.Type())
+	}
+	if sample.BytesIn != 100 || sample.BytesOut != 50 {
+		t.Fatalf("sample bytes = in:%d out:%d, want in:100 out:50", sample.BytesIn, sample.BytesOut)
+	}
+	if sample.RemotePort != 49152 {
+		t.Fatalf("sample RemotePort = %d, want 49152", sample.RemotePort)
+	}
+	if sample.SamplesIn != 1 || sample.SamplesOut != 1 {
+		t.Fatalf("sample counts = in:%d out:%d, want in:1 out:1", sample.SamplesIn, sample.SamplesOut)
+	}
+	metricCounters := s.trafficCounters[trafficMetricKey{
+		Protocol:  types.ProtocolTCP,
+		LocalIP:   "10.0.0.1",
+		LocalPort: 443,
+		RemoteIP:  "10.0.0.2",
+	}]
+	if metricCounters == nil || metricCounters.BytesIn != 100 || metricCounters.BytesOut != 50 {
+		t.Fatalf("traffic metric counters = %#v, want in:100 out:50", metricCounters)
+	}
+}
+
+func TestTrafficSamplesDropTCPWithoutConfirmedListeningPort(t *testing.T) {
+	s := &Server{
+		nodeName:          "node-a",
+		options:           Options{EnableByteCountEvents: true, EnableByteCountMetrics: true},
+		traffic:           make(map[trafficKey]*trafficAggregate),
+		trafficCounters:   make(map[trafficMetricKey]*trafficMetricCounters),
+		listeningTCPPorts: make(map[listeningPortKey]struct{}),
+	}
+
+	s.recordTrafficSample(types.ByteEvent{
+		Protocol:      types.ProtocolTCP,
+		Sport:         49152,
+		ByteCount:     100,
+		ByteDirection: types.ByteDirectionOut,
+	}, "10.0.0.1", "10.0.0.2")
+
+	if samples := s.drainTrafficSamples(time.Now()); len(samples) != 0 {
+		t.Fatalf("drainTrafficSamples() returned %d samples, want 0", len(samples))
+	}
+}
+
+func TestTrafficSamplesAggregateUDPWithoutListeningGate(t *testing.T) {
+	s := &Server{
+		nodeName:          "node-a",
+		options:           Options{EnableByteCountEvents: true, EnableByteCountMetrics: true},
+		traffic:           make(map[trafficKey]*trafficAggregate),
+		trafficCounters:   make(map[trafficMetricKey]*trafficMetricCounters),
+		listeningTCPPorts: make(map[listeningPortKey]struct{}),
+	}
+
+	s.recordTrafficSample(types.ByteEvent{
+		Protocol:      types.ProtocolUDP,
+		Sport:         5353,
+		Dport:         44444,
+		ByteCount:     25,
+		ByteDirection: types.ByteDirectionIn,
+	}, "10.0.0.1", "10.0.0.2")
+
+	samples := s.drainTrafficSamples(time.Now())
+	if len(samples) != 1 {
+		t.Fatalf("drainTrafficSamples() returned %d samples, want 1", len(samples))
+	}
+	if samples[0].Protocol != "UDP" || samples[0].BytesIn != 25 {
+		t.Fatalf("sample = %#v, want UDP bytesIn 25", samples[0])
 	}
 }
 

@@ -67,8 +67,11 @@ Then open http://localhost:6280 in your browser.
 - `--log-level`: Set log level: trace, debug, info, warn, error (default: warn)
 - `--http-port`: HTTP port for single-pod server (default: 5280)
 - `--http-mux-port`: HTTP port for multiplexer server (default: 6280)
+- `--metrics-port`: HTTP port for Prometheus metrics (default: 5281)
 - `--disable-tcp`: Disable TCP connection monitoring
 - `--enable-udp`: Enable UDP connection monitoring (disabled by default)
+- `--enable-byte-count-events`: Enable aggregated `traffic.sample` byte-count events (disabled by default)
+- `--enable-byte-count-metrics`: Enable Prometheus byte-count counters (disabled by default)
 - `--enable-host-info`: Send `host.info` events (enabled by default)
 - `--disable-host-info`: Do not send `host.info` events
 - `--enable-container-events`: Send `container.added` and `container.deleted` events (enabled by default)
@@ -83,7 +86,7 @@ Then open http://localhost:6280 in your browser.
 
 ### REST API
 
-- `GET /metrics` - Prometheus metrics
+- `GET :5281/metrics` - Prometheus metrics
 
 ### WebSocket API
 
@@ -99,6 +102,8 @@ Then open http://localhost:6280 in your browser.
   - Includes: protocol (string), state (string), socket cookie, node name, IPs, and ports
 - `connection.accepted` - Accepted inbound TCP connection PID enrichment
   - Includes the same connection fields plus PID; process/container metadata is sent first as `process.metainfo`/`container.metainfo`
+- `traffic.sample` - Aggregated byte-count delta emitted periodically when `--enable-byte-count-events` is set
+  - Includes: protocol, node name, local IP, local listening port, remote IP, remote port, `bytesIn`, `bytesOut`, `samplesIn`, and `samplesOut`
 - `port.listening` - Listening port discovered
   - Includes: protocol (string), IP, port, network namespace, host-netns flag, and pod metadata when resolved
 - `process.metainfo` - PID metadata for executable, cgroup slice, container UID, and network namespace
@@ -150,10 +155,12 @@ The web interface provides five views:
 
 ## Metrics
 
-Prometheus metrics are available at `/metrics`:
+Prometheus metrics are available on the metrics port at `/metrics`:
 
 - `netstatd_events_total{protocol,family}`: Total events by protocol (6=TCP, 17=UDP) and IP family (2=IPv4, 10=IPv6)
 - `netstatd_events_by_state{protocol,family,state}`: Events by connection state (ESTABLISHED, CLOSE, etc.)
+- `netstatd_traffic_bytes_in_total{protocol,local_ip,local_port,remote_ip}`: Aggregated inbound byte counter for local listening ports when `--enable-byte-count-metrics` is set
+- `netstatd_traffic_bytes_out_total{protocol,local_ip,local_port,remote_ip}`: Aggregated outbound byte counter for local listening ports when `--enable-byte-count-metrics` is set
 
 ## Architecture
 

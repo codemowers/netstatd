@@ -23,8 +23,11 @@ func main() {
 	logLevel := flag.String("log-level", "warn", "Log level: trace, debug, info, warn, error")
 	httpPort := flag.String("http-port", "5280", "HTTP port for single-pod server")
 	httpMuxPort := flag.String("http-mux-port", "6280", "HTTP port for multiplexer server")
+	metricsPort := flag.String("metrics-port", "5281", "HTTP port for Prometheus metrics")
 	disableTCP := flag.Bool("disable-tcp", false, "Disable TCP connection monitoring")
 	enableUDP := flag.Bool("enable-udp", false, "Enable UDP connection monitoring")
+	enableByteCountEvents := flag.Bool("enable-byte-count-events", false, "Enable aggregated traffic.sample byte-count events")
+	enableByteCountMetrics := flag.Bool("enable-byte-count-metrics", false, "Enable Prometheus byte-count counters")
 	enableHostInfo := flag.Bool("enable-host-info", true, "Send host.info metadata events")
 	disableHostInfo := flag.Bool("disable-host-info", false, "Do not send host.info metadata events")
 	enableContainerEvents := flag.Bool("enable-container-events", true, "Send container.added and container.deleted metadata events")
@@ -52,19 +55,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "os.Args: %v\n", os.Args)
-	fmt.Fprintf(os.Stderr, "Parsed flags:\n")
-	fmt.Fprintf(os.Stderr, "  disable-tcp=%v\n", *disableTCP)
-	fmt.Fprintf(os.Stderr, "  enable-udp=%v\n", *enableUDP)
-	fmt.Fprintf(os.Stderr, "  enable-host-info=%v\n", *enableHostInfo)
-	fmt.Fprintf(os.Stderr, "  disable-host-info=%v\n", *disableHostInfo)
-	fmt.Fprintf(os.Stderr, "  enable-container-events=%v\n", *enableContainerEvents)
-	fmt.Fprintf(os.Stderr, "  disable-container-events=%v\n", *disableContainerEvents)
-	fmt.Fprintf(os.Stderr, "  enable-container-metainfo=%v\n", *enableContainerMetainfo)
-	fmt.Fprintf(os.Stderr, "  disable-container-metainfo=%v\n", *disableContainerMetainfo)
-	fmt.Fprintf(os.Stderr, "  enable-image-metainfo=%v\n", *enableImageMetainfo)
-	fmt.Fprintf(os.Stderr, "  log-level=%v\n", *logLevel)
-
 	// Set up structured logging with slog
 	// Define custom TRACE level (lower than DEBUG)
 	const LevelTrace = slog.Level(-8)
@@ -86,8 +76,6 @@ func main() {
 		level = slog.LevelInfo
 	}
 
-	fmt.Fprintf(os.Stderr, "Setting log level to: %v (numeric: %d)\n", level, level)
-
 	// Build config bitmap
 	var configFlags uint32
 	if *disableTCP {
@@ -96,13 +84,13 @@ func main() {
 	if !*enableUDP {
 		configFlags |= ebpf.ConfigDisableUDP
 	}
+	if *enableByteCountEvents || *enableByteCountMetrics {
+		configFlags |= ebpf.ConfigEnableByteCounts
+	}
 
 	hostInfoEnabled := *enableHostInfo && !*disableHostInfo
 	containerEventsEnabled := *enableContainerEvents && !*disableContainerEvents
 	containerMetainfoEnabled := *enableContainerMetainfo && !*disableContainerMetainfo
-
-	fmt.Fprintf(os.Stderr, "Command line flags: http-port=%s http-mux-port=%s disable-tcp=%v enable-udp=%v enable-host-info=%v enable-container-events=%v enable-container-metainfo=%v enable-image-metainfo=%v\n",
-		*httpPort, *httpMuxPort, *disableTCP, *enableUDP, hostInfoEnabled, containerEventsEnabled, containerMetainfoEnabled, *enableImageMetainfo)
 
 	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: level,
@@ -140,6 +128,14 @@ func main() {
 		"http", fmt.Sprintf("http://[::]:%s", *httpPort),
 		"websocket", fmt.Sprintf("ws://[::]:%s/netstat", *httpPort),
 	)
+
+	metricsAddr := fmt.Sprintf("[::]:%s", *metricsPort)
+	metricsListener, err := net.Listen("tcp", metricsAddr)
+	if err != nil {
+		slog.Error("Failed to listen", "addr", metricsAddr, "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Metrics HTTP server listening", "addr", metricsAddr)
 
 	// Get fanout service from environment (optional)
 	fanoutService := os.Getenv("FANOUT_SERVICE")
@@ -180,7 +176,6 @@ func main() {
 	defer ctrdClient.Close()
 
 	// Initialize eBPF tracer
-	fmt.Fprintf(os.Stderr, "Initializing eBPF tracer: disableTCP=%v enableUDP=%v configFlags=0x%x\n", *disableTCP, *enableUDP, configFlags)
 	tracer, err := ebpf.NewTracer(configFlags)
 	if err != nil {
 		slog.Error("Failed to create eBPF tracer", "error", err)
@@ -195,6 +190,8 @@ func main() {
 		EnableContainerEvents:   containerEventsEnabled,
 		EnableContainerMetainfo: containerMetainfoEnabled,
 		EnableImageMetainfo:     *enableImageMetainfo,
+		EnableByteCountEvents:   *enableByteCountEvents,
+		EnableByteCountMetrics:  *enableByteCountMetrics,
 		PodHTTPPort:             *httpPort,
 	})
 
@@ -210,6 +207,16 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("Single-pod HTTP server stopped")
+	}()
+
+	go func() {
+		slog.Info("Metrics HTTP server starting...")
+		err := srv.StartMetricsWithListener(metricsListener)
+		if err != nil && err != http.ErrServerClosed {
+			slog.Error("Metrics server error", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("Metrics HTTP server stopped")
 	}()
 
 	// Start multiplexer server only if FANOUT_SERVICE is set

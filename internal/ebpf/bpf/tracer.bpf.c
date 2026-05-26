@@ -8,19 +8,30 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-// Event structure - carefully aligned to minimize padding
+// Event structure - ordered from wider fields to narrower fields.
 struct conn_event {
     __u64 sock_cookie; // Unique socket identifier (8 bytes, offset 0)
+    __u32 state;       // Current TCP state (4 bytes, offset 8)
+    __u32 pid;         // Process ID (4 bytes, offset 12)
+    __u16 family;      // AF_INET or AF_INET6 (2 bytes, offset 16)
+    __u16 sport;       // Source port (2 bytes, offset 18)
+    __u16 dport;       // Destination port (2 bytes, offset 20)
+    __u8 protocol;     // 6 for TCP, 17 for UDP (1 byte, offset 22)
+    __u8 event_type;   // Raw event source (1 byte, offset 23)
+    __u8 saddr[16];    // Source address - always 16 bytes (offset 24)
+    __u8 daddr[16];    // Destination address - always 16 bytes (offset 40)
+} __attribute__((packed));
+
+struct byte_event {
+    __u64 byte_count;  // Bytes transferred for data events (8 bytes, offset 0)
     __u32 pid;         // Process ID (4 bytes, offset 8)
-    __u32 _pad;        // Explicit padding; keeps state 4-byte aligned (offset 12)
-    __u32 state;       // Current TCP state (4 bytes, offset 16)
-    __u16 family;      // AF_INET or AF_INET6 (2 bytes, offset 20)
-    __u16 sport;       // Source port (2 bytes, offset 22)
-    __u16 dport;       // Destination port (2 bytes, offset 24)
-    __u8 protocol;     // 6 for TCP, 17 for UDP (1 byte, offset 26)
-    __u8 event_type;   // Raw event source (1 byte, offset 27)
-    __u8 saddr[16];    // Source address - always 16 bytes (offset 28)
-    __u8 daddr[16];    // Destination address - always 16 bytes (offset 44)
+    __u16 family;      // AF_INET or AF_INET6 (2 bytes, offset 12)
+    __u16 sport;       // Source port (2 bytes, offset 14)
+    __u16 dport;       // Destination port (2 bytes, offset 16)
+    __u8 protocol;     // 6 for TCP, 17 for UDP (1 byte, offset 18)
+    __u8 direction;    // 1=out, 2=in (1 byte, offset 19)
+    __u8 saddr[16];    // Source address - always 16 bytes (offset 20)
+    __u8 daddr[16];    // Destination address - always 16 bytes (offset 36)
 } __attribute__((packed));
 
 // Ring buffer for events
@@ -28,6 +39,11 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} byte_events SEC(".maps");
 
 // Configuration map for runtime settings
 struct {
@@ -37,9 +53,21 @@ struct {
     __type(value, __u32);
 } config SEC(".maps");
 
+struct udp_recv_args {
+    struct byte_event event;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u64);
+    __type(value, struct udp_recv_args);
+} udp_recv_args SEC(".maps");
+
 // Config flags bitmap
 #define CONFIG_DISABLE_TCP 0x1  // 1 << 0
 #define CONFIG_DISABLE_UDP 0x2  // 1 << 1
+#define CONFIG_ENABLE_BYTE_COUNTS 0x4  // 1 << 2
 
 #define TCP_ESTABLISHED 1
 #define TCP_SYN_SENT 2
@@ -52,6 +80,11 @@ struct {
 #define EVENT_TCP_ACCEPT 3
 #define EVENT_UDP_SEND 4
 #define EVENT_UDP_RECV 5
+#define EVENT_TCP_SEND 6
+#define EVENT_TCP_RECV 7
+
+#define BYTE_DIRECTION_OUT 1
+#define BYTE_DIRECTION_IN 2
 
 // Minimal socket structures used by TCP tp_btf and UDP kprobes.
 struct in6_addr {
@@ -77,6 +110,74 @@ struct sock_common {
 struct sock {
     struct sock_common __sk_common;
 } __attribute__((preserve_access_index));
+
+static __always_inline int byte_counts_enabled(void)
+{
+    __u32 key = 0;
+    __u32 *flags = bpf_map_lookup_elem(&config, &key);
+
+    return flags && ((*flags & CONFIG_ENABLE_BYTE_COUNTS) != 0);
+}
+
+static __always_inline int fill_byte_event(struct byte_event *e, struct sock *sk, __u8 protocol,
+                                           __u64 byte_count, __u8 direction)
+{
+    __u16 family;
+    bpf_core_read(&family, sizeof(family), &sk->__sk_common.skc_family);
+
+    if (family != 2 && family != 10)
+        return 0;
+
+    if (family == 2) {
+        __u32 saddr, daddr;
+        bpf_core_read(&saddr, sizeof(saddr), &sk->__sk_common.skc_rcv_saddr);
+        bpf_core_read(&daddr, sizeof(daddr), &sk->__sk_common.skc_daddr);
+        if ((saddr & 0xFF) == 0x7F || (daddr & 0xFF) == 0x7F)
+            return 0;
+    } else if (family == 10) {
+        __u32 saddr[4], daddr[4];
+        bpf_core_read(&saddr, sizeof(saddr), &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
+        bpf_core_read(&daddr, sizeof(daddr), &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
+        if ((saddr[0] == 0 && saddr[1] == 0 && saddr[2] == 0 && saddr[3] == 0x01000000) ||
+            (daddr[0] == 0 && daddr[1] == 0 && daddr[2] == 0 && daddr[3] == 0x01000000))
+            return 0;
+    }
+
+    __builtin_memset(e, 0, sizeof(*e));
+
+    e->byte_count = byte_count;
+    e->direction = direction;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    e->pid = pid_tgid >> 32;
+    e->family = family;
+    e->protocol = protocol;
+
+    __u16 sport, dport;
+    bpf_core_read(&sport, sizeof(sport), &sk->__sk_common.skc_num);
+    bpf_core_read(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
+    e->sport = sport;
+    e->dport = __builtin_bswap16(dport);
+
+    if (family == 2) {
+        __u32 saddr, daddr;
+        bpf_core_read(&saddr, sizeof(saddr), &sk->__sk_common.skc_rcv_saddr);
+        bpf_core_read(&daddr, sizeof(daddr), &sk->__sk_common.skc_daddr);
+
+        e->saddr[10] = 0xff;
+        e->saddr[11] = 0xff;
+        e->daddr[10] = 0xff;
+        e->daddr[11] = 0xff;
+
+        __builtin_memcpy(&e->saddr[12], &saddr, 4);
+        __builtin_memcpy(&e->daddr[12], &daddr, 4);
+    } else if (family == 10) {
+        bpf_core_read(e->saddr, 16, &sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+        bpf_core_read(e->daddr, 16, &sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    }
+
+    return 1;
+}
 
 SEC("tp_btf/inet_sock_set_state")
 int BPF_PROG(trace_inet_sock_set_state, struct sock *sk, int oldstate, int newstate)
@@ -125,7 +226,6 @@ int BPF_PROG(trace_inet_sock_set_state, struct sock *sk, int oldstate, int newst
     e->sock_cookie = bpf_get_socket_cookie(sk);
 
     e->pid = 0;
-    e->_pad = 0;
 
     e->state = newstate;
     e->family = family;
@@ -271,6 +371,56 @@ int trace_inet_csk_accept_ret(struct pt_regs *ctx)
     return 0;
 }
 
+SEC("kprobe/tcp_sendmsg")
+int trace_tcp_sendmsg(struct pt_regs *ctx)
+{
+    if (!byte_counts_enabled())
+        return 0;
+
+    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    __u64 size = (__u64)PT_REGS_PARM3(ctx);
+    if (!sk || size == 0)
+        return 0;
+
+    struct byte_event *e;
+    e = bpf_ringbuf_reserve(&byte_events, sizeof(*e), 0);
+    if (!e)
+        return 0;
+
+    if (!fill_byte_event(e, sk, 6, size, BYTE_DIRECTION_OUT)) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+SEC("kprobe/tcp_cleanup_rbuf")
+int trace_tcp_cleanup_rbuf(struct pt_regs *ctx)
+{
+    if (!byte_counts_enabled())
+        return 0;
+
+    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    int copied = (int)PT_REGS_PARM2(ctx);
+    if (!sk || copied <= 0)
+        return 0;
+
+    struct byte_event *e;
+    e = bpf_ringbuf_reserve(&byte_events, sizeof(*e), 0);
+    if (!e)
+        return 0;
+
+    if (!fill_byte_event(e, sk, 6, (__u64)copied, BYTE_DIRECTION_IN)) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
+
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
 // Kprobe for UDP send
 SEC("kprobe/udp_sendmsg")
 int trace_udp_sendmsg(struct pt_regs *ctx)
@@ -313,6 +463,21 @@ int trace_udp_sendmsg(struct pt_regs *ctx)
         }
     }
 
+    if (byte_counts_enabled()) {
+        __u64 byte_count = (__u64)PT_REGS_PARM3(ctx);
+        if (byte_count > 0) {
+            struct byte_event *be;
+            be = bpf_ringbuf_reserve(&byte_events, sizeof(*be), 0);
+            if (be) {
+                if (fill_byte_event(be, sk, 17, byte_count, BYTE_DIRECTION_OUT)) {
+                    bpf_ringbuf_submit(be, 0);
+                } else {
+                    bpf_ringbuf_discard(be, 0);
+                }
+            }
+        }
+    }
+
     // Reserve space in ring buffer
     struct conn_event *e;
     e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
@@ -324,7 +489,6 @@ int trace_udp_sendmsg(struct pt_regs *ctx)
     // Fill event
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     e->pid = pid_tgid >> 32;
-    e->_pad = 0;
 
     e->state = 0; // UDP has no state
     e->family = family;
@@ -408,6 +572,13 @@ int trace_udp_recvmsg(struct pt_regs *ctx)
         }
     }
 
+    if (byte_counts_enabled()) {
+        __u64 pid_tgid = bpf_get_current_pid_tgid();
+        struct udp_recv_args args = {};
+        if (fill_byte_event(&args.event, sk, 17, 0, BYTE_DIRECTION_IN))
+            bpf_map_update_elem(&udp_recv_args, &pid_tgid, &args, BPF_ANY);
+    }
+
     // Reserve space in ring buffer
     struct conn_event *e;
     e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
@@ -419,7 +590,6 @@ int trace_udp_recvmsg(struct pt_regs *ctx)
     // Fill event
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     e->pid = pid_tgid >> 32;
-    e->_pad = 0;
 
     e->state = 0; // UDP has no state
     e->family = family;
@@ -458,6 +628,39 @@ int trace_udp_recvmsg(struct pt_regs *ctx)
     }
 
     bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+SEC("kretprobe/udp_recvmsg")
+int trace_udp_recvmsg_ret(struct pt_regs *ctx)
+{
+    if (!byte_counts_enabled())
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct udp_recv_args *args = bpf_map_lookup_elem(&udp_recv_args, &pid_tgid);
+    if (!args)
+        return 0;
+
+    int copied = (int)PT_REGS_RC(ctx);
+    if (copied <= 0) {
+        bpf_map_delete_elem(&udp_recv_args, &pid_tgid);
+        return 0;
+    }
+
+    struct byte_event *e;
+    e = bpf_ringbuf_reserve(&byte_events, sizeof(*e), 0);
+    if (!e) {
+        bpf_map_delete_elem(&udp_recv_args, &pid_tgid);
+        return 0;
+    }
+
+    __builtin_memcpy(e, &args->event, sizeof(*e));
+    e->byte_count = (__u64)copied;
+    e->direction = BYTE_DIRECTION_IN;
+
+    bpf_ringbuf_submit(e, 0);
+    bpf_map_delete_elem(&udp_recv_args, &pid_tgid);
     return 0;
 }
 

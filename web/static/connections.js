@@ -165,6 +165,69 @@ function assertStableSockCookiePort(row, event, field, nextPort) {
   );
 }
 
+function formatByteCount(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "-";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit++;
+  }
+  const precision = unit === 0 || size >= 10 ? 0 : 1;
+  return `${size.toFixed(precision)} ${units[unit]}`;
+}
+
+function updateConnectionByteCells(row) {
+  if (!row) return;
+  const bytesIn = Number(row.dataset.bytesIn || 0);
+  const bytesOut = Number(row.dataset.bytesOut || 0);
+  if (row.cells[10]) {
+    row.cells[10].textContent = formatByteCount(bytesIn);
+    row.cells[10].title = bytesIn ? `${bytesIn} bytes in` : "";
+  }
+  if (row.cells[11]) {
+    row.cells[11].textContent = formatByteCount(bytesOut);
+    row.cells[11].title = bytesOut ? `${bytesOut} bytes out` : "";
+  }
+}
+
+function handleTrafficSample(event) {
+  const { nodeName, protocol, localIP, localPort, remoteIP, remotePort } =
+    event;
+  if (
+    !nodeName ||
+    !protocol ||
+    !localIP ||
+    !localPort ||
+    !remoteIP ||
+    !remotePort
+  )
+    return;
+
+  const selector =
+    `tr[data-node-name="${cssAttrValue(nodeName)}"]` +
+    `[data-protocol="${cssAttrValue(protocol)}"]` +
+    `[data-local-ip="${cssAttrValue(localIP)}"]` +
+    `[data-local-port="${cssAttrValue(localPort)}"]` +
+    `[data-remote-ip="${cssAttrValue(remoteIP)}"]` +
+    `[data-remote-port="${cssAttrValue(remotePort)}"]`;
+  const rows = window.connectionsTable
+    ? window.connectionsTable.querySelectorAll(selector)
+    : [];
+
+  rows.forEach((row) => {
+    const nextBytesIn =
+      Number(row.dataset.bytesIn || 0) + Number(event.bytesIn || 0);
+    const nextBytesOut =
+      Number(row.dataset.bytesOut || 0) + Number(event.bytesOut || 0);
+    row.dataset.bytesIn = String(nextBytesIn);
+    row.dataset.bytesOut = String(nextBytesOut);
+    updateConnectionByteCells(row);
+  });
+}
+
 function updateConnectionRowProcessMetadata(
   row,
   isAcceptedEvent,
@@ -433,7 +496,7 @@ function handleConnectionEvent(event) {
     row.dataset.createdAt = createdAt.toISOString();
 
     // Create cells with dummy content
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 12; i++) {
       const td = document.createElement("td");
       row.appendChild(td);
     }
@@ -448,6 +511,8 @@ function handleConnectionEvent(event) {
     row.cells[7].className = "col-netns";
     row.cells[8].className = "col-exe";
     row.cells[9].className = "col-cgroup-slice";
+    row.cells[10].className = "col-bytes";
+    row.cells[11].className = "col-bytes";
 
     if (window.connectionsTable) {
       window.connectionsTable.appendChild(row);
@@ -473,6 +538,7 @@ function handleConnectionEvent(event) {
   if (shouldRerenderEndpoints) {
     renderConnectionEndpoints(row);
   }
+  updateConnectionByteCells(row);
   markDuplicateConnectionRow(row);
   row.cells[1].textContent = state || "-";
   applyConnectionFiltersToRow(row);

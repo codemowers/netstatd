@@ -370,6 +370,13 @@ h1 {
   width: 15ch;
 }
 
+.data-table th.col-bytes,
+.data-table td.col-bytes {
+  width: 9ch;
+  text-align: right;
+  text-overflow: clip;
+}
+
 .data-table td.col-exe,
 .data-table td.col-cgroup-slice {
   direction: rtl;

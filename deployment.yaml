@@ -12,8 +12,8 @@ spec:
     app: netstatd
   ports:
     - name: http
-      port: 5281
-      targetPort: 5281
+      port: 5280
+      targetPort: 5280
       protocol: TCP
 ---
 apiVersion: v1
@@ -29,12 +29,16 @@ spec:
     app: netstatd
   ports:
     - name: http-single
+      port: 5280
+      targetPort: 5280
+      protocol: TCP
+    - name: metrics
       port: 5281
       targetPort: 5281
       protocol: TCP
     - name: http-mux
-      port: 6281
-      targetPort: 6281
+      port: 6280
+      targetPort: 6280
       protocol: TCP
 ---
 apiVersion: apps/v1
@@ -61,9 +65,12 @@ spec:
           image: git.codemowers.io/laurivosandi/netstatd
           args:
             - "--log-level=warn"
-            - "--http-port=5281"
-            - "--http-mux-port=6281"
+            - "--http-port=5280"
+            - "--metrics-port=5281"
+            - "--http-mux-port=6280"
             - "--enable-image-metainfo"
+            - "--enable-byte-count-events"
+            - "--enable-byte-count-metrics"
           resources:
             requests:
               cpu: 100m
@@ -72,14 +79,18 @@ spec:
               cpu: 500m
               memory: 512Mi
           ports:
-            - containerPort: 5281
+            - containerPort: 5280
               protocol: TCP
               name: http
+              hostPort: 5280
+            - containerPort: 5281
+              protocol: TCP
+              name: metrics
               hostPort: 5281
-            - containerPort: 6281
+            - containerPort: 6280
               protocol: TCP
               name: http-mux
-              hostPort: 6281
+              hostPort: 6280
           env:
             - name: NODE_NAME
               valueFrom:
@@ -139,4 +150,4 @@ spec:
     matchNames:
       - kube-system
   podMetricsEndpoints:
-    - port: http
+    - port: metrics

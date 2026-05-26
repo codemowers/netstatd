@@ -12,23 +12,28 @@ import (
 )
 
 type tracerConnEvent struct {
+	SockCookie uint64
+	State      uint32
 	Pid        uint32
-	Pad        uint32
 	Family     uint16
 	Sport      uint16
 	Dport      uint16
-	State      uint32
 	Protocol   uint8
 	EventType  uint8
-	SockCookie uint64
-	Ipv4       struct {
-		Saddr uint32
-		Daddr uint32
-	}
-	Ipv6 struct {
-		Saddr [16]uint8
-		Daddr [16]uint8
-	}
+	Saddr      [16]uint8
+	Daddr      [16]uint8
+}
+
+type tracerByteEvent struct {
+	ByteCount uint64
+	Pid       uint32
+	Family    uint16
+	Sport     uint16
+	Dport     uint16
+	Protocol  uint8
+	Direction uint8
+	Saddr     [16]uint8
+	Daddr     [16]uint8
 }
 
 // loadTracer returns the embedded CollectionSpec for tracer.
@@ -75,7 +80,10 @@ type tracerProgramSpecs struct {
 	TraceInetSockSetState *ebpf.ProgramSpec `ebpf:"trace_inet_sock_set_state"`
 	TraceInetCskAcceptRet *ebpf.ProgramSpec `ebpf:"trace_inet_csk_accept_ret"`
 	TraceSysExitListen    *ebpf.ProgramSpec `ebpf:"trace_sys_exit_listen"`
+	TraceTcpCleanupRbuf   *ebpf.ProgramSpec `ebpf:"trace_tcp_cleanup_rbuf"`
+	TraceTcpSendmsg       *ebpf.ProgramSpec `ebpf:"trace_tcp_sendmsg"`
 	TraceUdpRecvmsg       *ebpf.ProgramSpec `ebpf:"trace_udp_recvmsg"`
+	TraceUdpRecvmsgRet    *ebpf.ProgramSpec `ebpf:"trace_udp_recvmsg_ret"`
 	TraceUdpSendmsg       *ebpf.ProgramSpec `ebpf:"trace_udp_sendmsg"`
 }
 
@@ -83,8 +91,10 @@ type tracerProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tracerMapSpecs struct {
-	Config *ebpf.MapSpec `ebpf:"config"`
-	Events *ebpf.MapSpec `ebpf:"events"`
+	Config      *ebpf.MapSpec `ebpf:"config"`
+	ByteEvents  *ebpf.MapSpec `ebpf:"byte_events"`
+	Events      *ebpf.MapSpec `ebpf:"events"`
+	UdpRecvArgs *ebpf.MapSpec `ebpf:"udp_recv_args"`
 }
 
 // tracerObjects contains all objects after they have been loaded into the kernel.
@@ -102,7 +112,10 @@ type tracerPrograms struct {
 	TraceInetSockSetState *ebpf.Program `ebpf:"trace_inet_sock_set_state"`
 	TraceInetCskAcceptRet *ebpf.Program `ebpf:"trace_inet_csk_accept_ret"`
 	TraceSysExitListen    *ebpf.Program `ebpf:"trace_sys_exit_listen"`
+	TraceTcpCleanupRbuf   *ebpf.Program `ebpf:"trace_tcp_cleanup_rbuf"`
+	TraceTcpSendmsg       *ebpf.Program `ebpf:"trace_tcp_sendmsg"`
 	TraceUdpRecvmsg       *ebpf.Program `ebpf:"trace_udp_recvmsg"`
+	TraceUdpRecvmsgRet    *ebpf.Program `ebpf:"trace_udp_recvmsg_ret"`
 	TraceUdpSendmsg       *ebpf.Program `ebpf:"trace_udp_sendmsg"`
 }
 
@@ -110,8 +123,10 @@ type tracerPrograms struct {
 //
 // It can be passed to loadTracerObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracerMaps struct {
-	Config *ebpf.Map `ebpf:"config"`
-	Events *ebpf.Map `ebpf:"events"`
+	Config      *ebpf.Map `ebpf:"config"`
+	ByteEvents  *ebpf.Map `ebpf:"byte_events"`
+	Events      *ebpf.Map `ebpf:"events"`
+	UdpRecvArgs *ebpf.Map `ebpf:"udp_recv_args"`
 }
 
 func (t *tracerObjects) Close() error {
@@ -136,7 +151,16 @@ func (t *tracerPrograms) Close() error {
 	if e := t.TraceSysExitListen.Close(); e != nil {
 		err = e
 	}
+	if e := t.TraceTcpCleanupRbuf.Close(); e != nil {
+		err = e
+	}
+	if e := t.TraceTcpSendmsg.Close(); e != nil {
+		err = e
+	}
 	if e := t.TraceUdpRecvmsg.Close(); e != nil {
+		err = e
+	}
+	if e := t.TraceUdpRecvmsgRet.Close(); e != nil {
 		err = e
 	}
 	if e := t.TraceUdpSendmsg.Close(); e != nil {
@@ -150,7 +174,13 @@ func (t *tracerMaps) Close() error {
 	if e := t.Config.Close(); e != nil {
 		err = e
 	}
+	if e := t.ByteEvents.Close(); e != nil {
+		err = e
+	}
 	if e := t.Events.Close(); e != nil {
+		err = e
+	}
+	if e := t.UdpRecvArgs.Close(); e != nil {
 		err = e
 	}
 	return err

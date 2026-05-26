@@ -297,7 +297,7 @@ This keeps the eBPF processing path from blocking on browser writes except when 
 Monitors TCP and UDP connections using eBPF:
 
 - **TCP**: Attaches to `inet_sock_set_state` tracepoint (tp_btf) for state changes
-- **UDP**: Attaches kprobes to `udp_sendmsg` and `udp_recvmsg`
+- **UDP**: Attaches kprobes to `udp_sendmsg` and `udp_recvmsg`; byte-count flags also attach receive return probes
 - Uses ring buffers for efficient userspace communication
 - Supports both IPv4 and IPv6
 - Minimal overhead
@@ -313,6 +313,8 @@ Currently captured per connection event:
 - **State** (`uint32`) - Current TCP state (1=ESTABLISHED, 7=CLOSE, 10=LISTEN) or 0 for UDP
 - **Protocol** (`uint8`) - 6 for TCP, 17 for UDP
 - **Socket Cookie** (`uint64`) - Unique TCP state identifier via `bpf_get_socket_cookie(sk)` where available; accept and UDP kprobe events may use 0
+- **Byte Count** (`uint64`) - Bytes transferred for internal accounting events when `--enable-byte-count-events` or `--enable-byte-count-metrics` is set
+- **Byte Direction** (`uint8`) - 1 for outbound, 2 for inbound on internal accounting events
 - **Source IP** - IPv4 (uint32) or IPv6 (16 bytes)
 - **Destination IP** - IPv4 (uint32) or IPv6 (16 bytes)
 
@@ -465,6 +467,29 @@ Sent for accepted inbound TCP connections. This is the PID-bearing companion eve
 - `localPort`: Local port number (if non-zero)
 - `remotePort`: Remote port number (if non-zero)
 - `sockCookie`: Socket cookie if available; accept kretprobe events may use 0
+`connection.event` does not carry raw byte counters. When `--enable-byte-count-events` or `--enable-byte-count-metrics` is set, raw accounting events are drained from a separate byte-count ring buffer and aggregated server-side. WebSocket `traffic.sample` deltas are keyed by protocol, local IP, local listening port, remote IP, and remote port so the browser can attach bytes to exact connection rows. Prometheus byte counters intentionally omit remote port and aggregate by protocol, local IP, local listening port, and remote IP so `rate()` works at the service level.
+
+### `traffic.sample`
+
+Sent periodically when `--enable-byte-count-events` is set and byte-count deltas have been recorded.
+
+**Required fields:**
+
+- `type`: "traffic.sample"
+- `timestamp`: ISO 8601 timestamp
+- `nodeName`: Node name
+- `protocol`: Protocol name ("TCP" or "UDP")
+- `localIP`: Local IP address
+- `localPort`: Local service/listening port
+- `remoteIP`: Remote IP address
+- `remotePort`: Remote port for matching a sample to a connection row
+
+**Optional fields:**
+
+- `bytesIn`: Inbound bytes since the previous sample
+- `bytesOut`: Outbound bytes since the previous sample
+- `samplesIn`: Number of inbound accounting samples included in this delta
+- `samplesOut`: Number of outbound accounting samples included in this delta
 
 **Note:** The WebSocket writer sends `container.metainfo`, optional `image.metainfo`, and `process.metainfo` before `connection.accepted` when it has not already sent metadata for that PID. In the browser, this event enriches existing connection rows and listening port rows; it does not create a new connection row by itself.
 
@@ -583,11 +608,14 @@ TCP and UDP monitoring can be independently enabled/disabled via command-line fl
 
 - `--disable-tcp`: Disables TCP connection monitoring (eBPF tracepoint not attached)
 - `--enable-udp`: Enables UDP connection monitoring (eBPF kprobes attached, disabled by default)
+- `--enable-byte-count-events`: Enables aggregated WebSocket byte-count events from TCP send/receive and UDP send/receive probes (disabled by default)
+- `--enable-byte-count-metrics`: Enables Prometheus byte-count counters from TCP send/receive and UDP send/receive probes (disabled by default)
 
 ## Default Configuration
 
 - Containerd socket: `/run/containerd/containerd.sock`
 - Single-pod HTTP server: `[::]:5280`
+- Metrics HTTP server: `[::]:5281`
 - Multiplexer HTTP server: `[::]:6280`
 - Headless service name: `netstatd-headless`
 
@@ -602,8 +630,11 @@ Command-line flags:
 - `--log-level` - Set log level: trace, debug, info, warn, error (default: warn)
 - `--http-port` - HTTP port for single-pod server (default: 5280)
 - `--http-mux-port` - HTTP port for multiplexer server (default: 6280)
+- `--metrics-port` - HTTP port for Prometheus metrics (default: 5281)
 - `--disable-tcp` - Disable TCP connection monitoring
 - `--enable-udp` - Enable UDP connection monitoring (disabled by default)
+- `--enable-byte-count-events` - Enable aggregated `traffic.sample` byte-count events (disabled by default)
+- `--enable-byte-count-metrics` - Enable Prometheus byte-count counters (disabled by default)
 - `--enable-host-info` - Send `host.info` events (enabled by default)
 - `--disable-host-info` - Do not send `host.info` events
 - `--enable-container-events` - Send `container.added` and `container.deleted` events (enabled by default)
@@ -746,9 +777,11 @@ Production recommendations:
 
 ## Metrics
 
-The server exposes Prometheus metrics at `/metrics`:
+The server exposes Prometheus metrics on the metrics port at `/metrics`:
 
 - `netstatd_events_total{protocol,family}` - Total events by protocol and address family
 - `netstatd_events_by_state{protocol,family,state}` - Events by TCP/UDP state
+- `netstatd_traffic_bytes_in_total{protocol,local_ip,local_port,remote_ip}` - Aggregated inbound byte counter when `--enable-byte-count-metrics` is set
+- `netstatd_traffic_bytes_out_total{protocol,local_ip,local_port,remote_ip}` - Aggregated outbound byte counter when `--enable-byte-count-metrics` is set
 
-Metrics use protocol numbers (6=TCP, 17=UDP) and address family numbers (2=IPv4, 10=IPv6) as labels.
+Connection metrics use protocol numbers (6=TCP, 17=UDP) and address family numbers (2=IPv4, 10=IPv6) as labels. Traffic byte counters use protocol names and intentionally omit remote port.

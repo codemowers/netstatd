@@ -43,7 +43,7 @@ COPY --from=builder /app/internal/ebpf/tracer_bpfel.o ./internal/ebpf/
 COPY --from=builder /etc/services /etc/services
 COPY services /services
 COPY web web
-EXPOSE 5280 6280 5253 6253
+EXPOSE 5280 5281 6280 5253 6253
 ENTRYPOINT ["/netstatd"]
 
 CMD ["-log-level", "error"]

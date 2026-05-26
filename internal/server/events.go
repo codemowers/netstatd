@@ -36,6 +36,27 @@ func (e ConnectionAcceptedEvent) Type() string {
 	return e.EventType
 }
 
+// TrafficSampleEvent represents aggregated byte-count deltas for a local
+// service endpoint and remote IP.
+type TrafficSampleEvent struct {
+	EventType  string `json:"type"`
+	Timestamp  string `json:"timestamp"`
+	NodeName   string `json:"nodeName,omitempty"`
+	Protocol   string `json:"protocol"`
+	LocalIP    string `json:"localIP"`
+	LocalPort  uint16 `json:"localPort"`
+	RemoteIP   string `json:"remoteIP"`
+	RemotePort uint16 `json:"remotePort,omitempty"`
+	BytesIn    uint64 `json:"bytesIn,omitempty"`
+	BytesOut   uint64 `json:"bytesOut,omitempty"`
+	SamplesIn  uint64 `json:"samplesIn,omitempty"`
+	SamplesOut uint64 `json:"samplesOut,omitempty"`
+}
+
+func (e TrafficSampleEvent) Type() string {
+	return e.EventType
+}
+
 // ContainerMetainfoEvent represents a container.metainfo event.
 // It carries container-scoped metadata plus flattened Kubernetes pod fields.
 type ContainerMetainfoEvent struct {

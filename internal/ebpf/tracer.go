@@ -14,15 +14,18 @@ import (
 
 // Config flags bitmap
 const (
-	ConfigDisableTCP uint32 = 1 << 0 // 0x1
-	ConfigDisableUDP uint32 = 1 << 1 // 0x2
+	ConfigDisableTCP       uint32 = 1 << 0 // 0x1
+	ConfigDisableUDP       uint32 = 1 << 1 // 0x2
+	ConfigEnableByteCounts uint32 = 1 << 2 // 0x4
 )
 
 // Tracer manages eBPF programs and ring buffer
 type Tracer struct {
 	objs        *tracerObjects
 	ringbuf     *ringbuf.Reader
+	byteRingbuf *ringbuf.Reader
 	events      chan types.ConnEvent
+	byteEvents  chan types.ByteEvent
 	links       []link.Link
 	configFlags uint32
 }
@@ -30,6 +33,7 @@ type Tracer struct {
 func NewTracer(configFlags uint32) (*Tracer, error) {
 	disableTCP := (configFlags & ConfigDisableTCP) != 0
 	disableUDP := (configFlags & ConfigDisableUDP) != 0
+	enableByteCounts := (configFlags & ConfigEnableByteCounts) != 0
 
 	// Validate that at least one protocol is enabled
 	if disableTCP && disableUDP {
@@ -40,7 +44,8 @@ func NewTracer(configFlags uint32) (*Tracer, error) {
 		"configFlags", fmt.Sprintf("0x%x", configFlags),
 		"configFlagsBinary", fmt.Sprintf("0b%08b", configFlags),
 		"disableTCP", disableTCP,
-		"disableUDP", disableUDP)
+		"disableUDP", disableUDP,
+		"enableByteCounts", enableByteCounts)
 	slog.Debug("Loading eBPF objects")
 
 	spec, err := loadTracer()
@@ -89,6 +94,22 @@ func NewTracer(configFlags uint32) (*Tracer, error) {
 		} else {
 			links = append(links, acceptRet)
 		}
+
+		if enableByteCounts {
+			tcpSend, err := link.Kprobe("tcp_sendmsg", objs.TraceTcpSendmsg, nil)
+			if err != nil {
+				slog.Warn("tcp_sendmsg kprobe unavailable; outbound TCP byte counts will be missing", "error", err)
+			} else {
+				links = append(links, tcpSend)
+			}
+
+			tcpRecv, err := link.Kprobe("tcp_cleanup_rbuf", objs.TraceTcpCleanupRbuf, nil)
+			if err != nil {
+				slog.Warn("tcp_cleanup_rbuf kprobe unavailable; inbound TCP byte counts will be missing", "error", err)
+			} else {
+				links = append(links, tcpRecv)
+			}
+		}
 		slog.Info("TCP monitoring enabled")
 	} else {
 		slog.Info("TCP monitoring disabled")
@@ -116,6 +137,15 @@ func NewTracer(configFlags uint32) (*Tracer, error) {
 			return nil, fmt.Errorf("attaching udp_recvmsg kprobe: %w", err)
 		}
 		links = append(links, kprobeRecv)
+
+		if enableByteCounts {
+			udpRecvRet, err := link.Kretprobe("udp_recvmsg", objs.TraceUdpRecvmsgRet, nil)
+			if err != nil {
+				slog.Warn("udp_recvmsg kretprobe unavailable; inbound UDP byte counts will be missing", "error", err)
+			} else {
+				links = append(links, udpRecvRet)
+			}
+		}
 		slog.Info("UDP monitoring enabled")
 	} else {
 		slog.Info("UDP monitoring disabled")
@@ -130,15 +160,33 @@ func NewTracer(configFlags uint32) (*Tracer, error) {
 		return nil, fmt.Errorf("opening ringbuf reader: %w", err)
 	}
 
+	var byteRB *ringbuf.Reader
+	if enableByteCounts {
+		byteRB, err = ringbuf.NewReader(objs.ByteEvents)
+		if err != nil {
+			rb.Close()
+			for _, l := range links {
+				l.Close()
+			}
+			objs.Close()
+			return nil, fmt.Errorf("opening byte ringbuf reader: %w", err)
+		}
+	}
+
 	t := &Tracer{
 		objs:        &objs,
 		ringbuf:     rb,
+		byteRingbuf: byteRB,
 		events:      make(chan types.ConnEvent, 100),
+		byteEvents:  make(chan types.ByteEvent, 1000),
 		links:       links,
 		configFlags: configFlags,
 	}
 
 	go t.readEvents()
+	if t.byteRingbuf != nil {
+		go t.readByteEvents()
+	}
 
 	slog.Info("eBPF tracer started successfully")
 	return t, nil
@@ -188,26 +236,60 @@ func (t *Tracer) readEvents() {
 	}
 }
 
+func (t *Tracer) readByteEvents() {
+	for {
+		record, err := t.byteRingbuf.Read()
+		if err != nil {
+			slog.Error("Error reading byte ring buffer")
+			return
+		}
+
+		event, err := parseByteEvent(record.RawSample)
+		if err != nil {
+			slog.Error("Fatal error parsing byte event - invalid data from eBPF",
+				"error", err,
+				"raw_bytes", fmt.Sprintf("%x", record.RawSample),
+			)
+			continue
+		}
+
+		slog.Log(nil, slog.Level(-8), "eBPF byte event received",
+			"pid", event.PID,
+			"family", familyToString(event.Family),
+			"sport", event.Sport,
+			"dport", event.Dport,
+			"protocol", event.Protocol,
+			"byteCount", event.ByteCount,
+			"byteDirection", event.ByteDirection,
+		)
+
+		select {
+		case t.byteEvents <- *event:
+		default:
+			slog.Warn("Byte events channel full, dropping byte event")
+		}
+	}
+}
+
 // parseConnEvent parses raw bytes from eBPF to ConnEvent
 func parseConnEvent(data []byte) (*types.ConnEvent, error) {
-	// The struct in C is (reordered for minimal padding):
+	// The struct in C is:
 	// struct conn_event {
 	//     __u64 sock_cookie;  // 8 bytes, offset 0
-	//     __u32 pid;          // 4 bytes, offset 8
-	//     __u32 _pad;         // 4 bytes, offset 12
-	//     __u32 state;        // 4 bytes, offset 16
-	//     __u16 family;       // 2 bytes, offset 20
-	//     __u16 sport;        // 2 bytes, offset 22
-	//     __u16 dport;        // 2 bytes, offset 24
-	//     __u8 protocol;      // 1 byte,  offset 26
-	//     __u8 event_type;    // 1 byte,  offset 27
-	//     __u8 saddr[16];     // 16 bytes, offset 28
-	//     __u8 daddr[16];     // 16 bytes, offset 44
+	//     __u32 state;        // 4 bytes, offset 8
+	//     __u32 pid;          // 4 bytes, offset 12
+	//     __u16 family;       // 2 bytes, offset 16
+	//     __u16 sport;        // 2 bytes, offset 18
+	//     __u16 dport;        // 2 bytes, offset 20
+	//     __u8 protocol;      // 1 byte,  offset 22
+	//     __u8 event_type;    // 1 byte,  offset 23
+	//     __u8 saddr[16];     // 16 bytes, offset 24
+	//     __u8 daddr[16];     // 16 bytes, offset 40
 	// };
-	// Total size: 8 + 4 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 16 + 16 = 60 bytes
+	// Total size: 8 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 16 + 16 = 56 bytes
 
-	if len(data) < 60 {
-		return nil, fmt.Errorf("data too short: %d bytes, need at least 60", len(data))
+	if len(data) < 56 {
+		return nil, fmt.Errorf("data too short: %d bytes, need at least 56", len(data))
 	}
 
 	var event types.ConnEvent
@@ -221,25 +303,19 @@ func parseConnEvent(data []byte) (*types.ConnEvent, error) {
 		return nil, fmt.Errorf("reading sock_cookie at offset 0: %w (data len: %d)", err, startLen)
 	}
 
-	// Read PID (4 bytes) - offset 8
-	if err := binary.Read(buf, binary.LittleEndian, &event.PID); err != nil {
-		return nil, fmt.Errorf("reading PID at offset 8: %w (data len: %d)", err, startLen)
-	}
-
-	// Skip explicit padding (4 bytes) - offset 12
-	var padding uint32
-	if err := binary.Read(buf, binary.LittleEndian, &padding); err != nil {
-		return nil, fmt.Errorf("reading padding at offset 12: %w (data len: %d)", err, startLen)
-	}
-
-	// Read state (4 bytes) - offset 16
+	// Read state (4 bytes) - offset 8
 	if err := binary.Read(buf, binary.LittleEndian, &event.State); err != nil {
-		return nil, fmt.Errorf("reading state at offset 16: %w (data len: %d)", err, startLen)
+		return nil, fmt.Errorf("reading state at offset 8: %w (data len: %d)", err, startLen)
 	}
 
-	// Read family (2 bytes) - offset 20
+	// Read PID (4 bytes) - offset 12
+	if err := binary.Read(buf, binary.LittleEndian, &event.PID); err != nil {
+		return nil, fmt.Errorf("reading PID at offset 12: %w (data len: %d)", err, startLen)
+	}
+
+	// Read family (2 bytes) - offset 16
 	if err := binary.Read(buf, binary.LittleEndian, &event.Family); err != nil {
-		return nil, fmt.Errorf("reading family at offset 20: %w (data len: %d)", err, startLen)
+		return nil, fmt.Errorf("reading family at offset 16: %w (data len: %d)", err, startLen)
 	}
 
 	// Validate family is non-zero
@@ -247,19 +323,19 @@ func parseConnEvent(data []byte) (*types.ConnEvent, error) {
 		return nil, fmt.Errorf("invalid family: got 0, expected non-zero (AF_INET=2 or AF_INET6=10). Data len: %d", startLen)
 	}
 
-	// Read sport (2 bytes) - offset 22
+	// Read sport (2 bytes) - offset 18
 	if err := binary.Read(buf, binary.LittleEndian, &event.Sport); err != nil {
-		return nil, fmt.Errorf("reading sport at offset 22: %w (data len: %d)", err, startLen)
+		return nil, fmt.Errorf("reading sport at offset 18: %w (data len: %d)", err, startLen)
 	}
 
-	// Read dport (2 bytes) - offset 24
+	// Read dport (2 bytes) - offset 20
 	if err := binary.Read(buf, binary.LittleEndian, &event.Dport); err != nil {
-		return nil, fmt.Errorf("reading dport at offset 24: %w (data len: %d)", err, startLen)
+		return nil, fmt.Errorf("reading dport at offset 20: %w (data len: %d)", err, startLen)
 	}
 
-	// Read protocol (1 byte) - offset 26
+	// Read protocol (1 byte) - offset 22
 	if err := binary.Read(buf, binary.LittleEndian, &event.Protocol); err != nil {
-		return nil, fmt.Errorf("reading protocol at offset 26: %w (data len: %d)", err, startLen)
+		return nil, fmt.Errorf("reading protocol at offset 22: %w (data len: %d)", err, startLen)
 	}
 
 	// Validate protocol is non-zero
@@ -267,9 +343,9 @@ func parseConnEvent(data []byte) (*types.ConnEvent, error) {
 		return nil, fmt.Errorf("invalid protocol: got 0, expected non-zero (TCP=6, UDP=17, etc). Data len: %d", startLen)
 	}
 
-	// Read raw event type (1 byte) - offset 27
+	// Read raw event type (1 byte) - offset 23
 	if err := binary.Read(buf, binary.LittleEndian, &event.EventType); err != nil {
-		return nil, fmt.Errorf("reading event_type at offset 27: %w (data len: %d)", err, startLen)
+		return nil, fmt.Errorf("reading event_type at offset 23: %w (data len: %d)", err, startLen)
 	}
 
 	// Note: sport can be 0 for various TCP states (SYN_SENT, CLOSE, FIN_WAIT2, etc.)
@@ -281,14 +357,72 @@ func parseConnEvent(data []byte) (*types.ConnEvent, error) {
 	// Note: dport can be 0 for various TCP states (LISTEN, CLOSE, etc.)
 	// This is normal kernel behavior, so we don't validate dport here
 
-	// Read addresses (always 16 bytes each, IPv4-mapped IPv6 format) - offset 28
+	// Read addresses (always 16 bytes each, IPv4-mapped IPv6 format) - offset 24
 	if err := binary.Read(buf, binary.LittleEndian, &event.SaddrV6); err != nil {
-		return nil, fmt.Errorf("reading saddr_v6 at offset 28: %w (data len: %d, remaining: %d)", err, startLen, buf.Len())
+		return nil, fmt.Errorf("reading saddr_v6 at offset 24: %w (data len: %d, remaining: %d)", err, startLen, buf.Len())
 	}
 
-	// Read destination address - offset 44
+	// Read destination address - offset 40
 	if err := binary.Read(buf, binary.LittleEndian, &event.DaddrV6); err != nil {
-		return nil, fmt.Errorf("reading daddr_v6 at offset 44: %w (data len: %d, remaining: %d)", err, startLen, buf.Len())
+		return nil, fmt.Errorf("reading daddr_v6 at offset 40: %w (data len: %d, remaining: %d)", err, startLen, buf.Len())
+	}
+
+	return &event, nil
+}
+
+func parseByteEvent(data []byte) (*types.ByteEvent, error) {
+	// struct byte_event {
+	//     __u64 byte_count; // 8 bytes, offset 0
+	//     __u32 pid;        // 4 bytes, offset 8
+	//     __u16 family;     // 2 bytes, offset 12
+	//     __u16 sport;      // 2 bytes, offset 14
+	//     __u16 dport;      // 2 bytes, offset 16
+	//     __u8 protocol;    // 1 byte,  offset 18
+	//     __u8 direction;   // 1 byte,  offset 19
+	//     __u8 saddr[16];   // 16 bytes, offset 20
+	//     __u8 daddr[16];   // 16 bytes, offset 36
+	// };
+	// Total size: 8 + 4 + 2 + 2 + 2 + 1 + 1 + 16 + 16 = 52 bytes
+	if len(data) < 52 {
+		return nil, fmt.Errorf("data too short: %d bytes, need at least 52", len(data))
+	}
+
+	var event types.ByteEvent
+	buf := bytes.NewReader(data)
+	startLen := len(data)
+
+	if err := binary.Read(buf, binary.LittleEndian, &event.ByteCount); err != nil {
+		return nil, fmt.Errorf("reading byte_count at offset 0: %w (data len: %d)", err, startLen)
+	}
+	if err := binary.Read(buf, binary.LittleEndian, &event.PID); err != nil {
+		return nil, fmt.Errorf("reading PID at offset 8: %w (data len: %d)", err, startLen)
+	}
+	if err := binary.Read(buf, binary.LittleEndian, &event.Family); err != nil {
+		return nil, fmt.Errorf("reading family at offset 12: %w (data len: %d)", err, startLen)
+	}
+	if event.Family == 0 {
+		return nil, fmt.Errorf("invalid family: got 0, expected non-zero (AF_INET=2 or AF_INET6=10). Data len: %d", startLen)
+	}
+	if err := binary.Read(buf, binary.LittleEndian, &event.Sport); err != nil {
+		return nil, fmt.Errorf("reading sport at offset 14: %w (data len: %d)", err, startLen)
+	}
+	if err := binary.Read(buf, binary.LittleEndian, &event.Dport); err != nil {
+		return nil, fmt.Errorf("reading dport at offset 16: %w (data len: %d)", err, startLen)
+	}
+	if err := binary.Read(buf, binary.LittleEndian, &event.Protocol); err != nil {
+		return nil, fmt.Errorf("reading protocol at offset 18: %w (data len: %d)", err, startLen)
+	}
+	if event.Protocol == 0 {
+		return nil, fmt.Errorf("invalid protocol: got 0, expected non-zero (TCP=6, UDP=17, etc). Data len: %d", startLen)
+	}
+	if err := binary.Read(buf, binary.LittleEndian, &event.ByteDirection); err != nil {
+		return nil, fmt.Errorf("reading direction at offset 19: %w (data len: %d)", err, startLen)
+	}
+	if err := binary.Read(buf, binary.LittleEndian, &event.SaddrV6); err != nil {
+		return nil, fmt.Errorf("reading saddr_v6 at offset 20: %w (data len: %d, remaining: %d)", err, startLen, buf.Len())
+	}
+	if err := binary.Read(buf, binary.LittleEndian, &event.DaddrV6); err != nil {
+		return nil, fmt.Errorf("reading daddr_v6 at offset 36: %w (data len: %d, remaining: %d)", err, startLen, buf.Len())
 	}
 
 	return &event, nil
@@ -299,11 +433,18 @@ func (t *Tracer) Events() <-chan types.ConnEvent {
 	return t.events
 }
 
+func (t *Tracer) ByteEvents() <-chan types.ByteEvent {
+	return t.byteEvents
+}
+
 // Close cleans up eBPF resources
 func (t *Tracer) Close() error {
 	// Close ring buffer first
 	if t.ringbuf != nil {
 		t.ringbuf.Close()
+	}
+	if t.byteRingbuf != nil {
+		t.byteRingbuf.Close()
 	}
 
 	// Close all links
@@ -318,6 +459,7 @@ func (t *Tracer) Close() error {
 
 	// Close events channel
 	close(t.events)
+	close(t.byteEvents)
 
 	slog.Info("eBPF tracer closed")
 	return nil

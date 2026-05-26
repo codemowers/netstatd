@@ -7,8 +7,8 @@ import "net"
 // IPv4 addresses are encoded as IPv4-mapped IPv6 (::ffff:0:0/96)
 type ConnEvent struct {
 	SockCookie uint64    `json:"sockCookie"` // Socket cookie for connection tracking
-	PID        uint32    `json:"pid"`        // Process ID from bpf_get_current_pid_tgid()
 	State      uint32    `json:"state"`      // Current TCP state
+	PID        uint32    `json:"pid"`        // Process ID from bpf_get_current_pid_tgid()
 	Family     uint16    `json:"family"`     // AF_INET=2, AF_INET6=10
 	Sport      uint16    `json:"sport"`
 	Dport      uint16    `json:"dport"`
@@ -16,6 +16,33 @@ type ConnEvent struct {
 	EventType  uint8     `json:"eventType"`
 	SaddrV6    [16]uint8 `json:"saddrV6"` // Source address (IPv6 or IPv4-mapped IPv6)
 	DaddrV6    [16]uint8 `json:"daddrV6"` // Destination address (IPv6 or IPv4-mapped IPv6)
+}
+
+type ByteEvent struct {
+	ByteCount     uint64    `json:"byteCount"`
+	PID           uint32    `json:"pid"`
+	Family        uint16    `json:"family"`
+	Sport         uint16    `json:"sport"`
+	Dport         uint16    `json:"dport"`
+	Protocol      uint8     `json:"protocol"`
+	ByteDirection uint8     `json:"byteDirection"`
+	SaddrV6       [16]uint8 `json:"saddrV6"`
+	DaddrV6       [16]uint8 `json:"daddrV6"`
+}
+
+func ByteDirectionToString(direction uint8) string {
+	switch direction {
+	case ByteDirectionOut:
+		return "out"
+	case ByteDirectionIn:
+		return "in"
+	default:
+		return ""
+	}
+}
+
+func (be *ByteEvent) ByteDirectionString() string {
+	return ByteDirectionToString(be.ByteDirection)
 }
 
 // StateToString converts state to string representation
@@ -51,6 +78,14 @@ func IntToIP(ip uint32) net.IP {
 
 // LocalRemoteIPs returns the decoded local and remote IP addresses.
 func (ce *ConnEvent) LocalRemoteIPs() (string, string) {
+	return localRemoteIPs(ce.Family, ce.SaddrV6, ce.DaddrV6)
+}
+
+func (be *ByteEvent) LocalRemoteIPs() (string, string) {
+	return localRemoteIPs(be.Family, be.SaddrV6, be.DaddrV6)
+}
+
+func localRemoteIPs(family uint16, saddrV6 [16]uint8, daddrV6 [16]uint8) (string, string) {
 	isAllZero := func(b []uint8) bool {
 		for _, v := range b {
 			if v != 0 {
@@ -63,33 +98,33 @@ func (ce *ConnEvent) LocalRemoteIPs() (string, string) {
 	// Addresses are always in IPv6 format (IPv4 uses IPv4-mapped IPv6).
 	// Unspecified addresses are returned as empty strings so callers can
 	// count them as missing instead of rendering "[::]" or "0.0.0.0".
-	if ce.Family == 2 { // IPv4
-		if isAllZero(ce.SaddrV6[12:16]) {
-			if isAllZero(ce.DaddrV6[12:16]) {
+	if family == 2 { // IPv4
+		if isAllZero(saddrV6[12:16]) {
+			if isAllZero(daddrV6[12:16]) {
 				return "", ""
 			}
-			return "", net.IPv4(ce.DaddrV6[12], ce.DaddrV6[13], ce.DaddrV6[14], ce.DaddrV6[15]).String()
+			return "", net.IPv4(daddrV6[12], daddrV6[13], daddrV6[14], daddrV6[15]).String()
 		}
-		if isAllZero(ce.DaddrV6[12:16]) {
-			return net.IPv4(ce.SaddrV6[12], ce.SaddrV6[13], ce.SaddrV6[14], ce.SaddrV6[15]).String(), ""
+		if isAllZero(daddrV6[12:16]) {
+			return net.IPv4(saddrV6[12], saddrV6[13], saddrV6[14], saddrV6[15]).String(), ""
 		}
-		return net.IPv4(ce.SaddrV6[12], ce.SaddrV6[13], ce.SaddrV6[14], ce.SaddrV6[15]).String(),
-			net.IPv4(ce.DaddrV6[12], ce.DaddrV6[13], ce.DaddrV6[14], ce.DaddrV6[15]).String()
+		return net.IPv4(saddrV6[12], saddrV6[13], saddrV6[14], saddrV6[15]).String(),
+			net.IPv4(daddrV6[12], daddrV6[13], daddrV6[14], daddrV6[15]).String()
 	}
-	if ce.Family == 10 { // IPv6
-		if isAllZero(ce.SaddrV6[:]) {
-			if isAllZero(ce.DaddrV6[:]) {
+	if family == 10 { // IPv6
+		if isAllZero(saddrV6[:]) {
+			if isAllZero(daddrV6[:]) {
 				return "", ""
 			}
-			return "", net.IP(ce.DaddrV6[:]).String()
+			return "", net.IP(daddrV6[:]).String()
 		}
-		if isAllZero(ce.DaddrV6[:]) {
-			return net.IP(ce.SaddrV6[:]).String(), ""
+		if isAllZero(daddrV6[:]) {
+			return net.IP(saddrV6[:]).String(), ""
 		}
 		localIP := make(net.IP, 16)
 		remoteIP := make(net.IP, 16)
-		copy(localIP, ce.SaddrV6[:])
-		copy(remoteIP, ce.DaddrV6[:])
+		copy(localIP, saddrV6[:])
+		copy(remoteIP, daddrV6[:])
 		return localIP.String(), remoteIP.String()
 	}
 	return "", ""

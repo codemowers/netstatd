@@ -118,6 +118,8 @@
               <th class="col-netns">Net NS</th>
               <th class="col-exe">Process</th>
               <th class="col-cgroup-slice">Cgroup Slice</th>
+              <th class="col-bytes">In</th>
+              <th class="col-bytes">Out</th>
             </tr>
           </thead>
           <tbody id="connectionsTableBody"></tbody>
@@ -318,6 +320,7 @@
           <option value="">All Event Types</option>
           <option value="connection.event">connection.event</option>
           <option value="connection.accepted">connection.accepted</option>
+          <option value="traffic.sample">traffic.sample</option>
           <option value="process.metainfo">process.metainfo</option>
           <option value="container.metainfo">container.metainfo</option>
           <option value="image.metainfo">image.metainfo</option>

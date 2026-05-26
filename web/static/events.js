@@ -36,6 +36,9 @@ function handleEvent(event) {
     case "connection.accepted":
       handleConnectionEvent(event);
       break;
+    case "traffic.sample":
+      handleTrafficSample(event);
+      break;
     case "port.listening":
       handlePortListening(event);
       break;

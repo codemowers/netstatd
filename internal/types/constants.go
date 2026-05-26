@@ -12,6 +12,14 @@ const (
 	ConnEventTCPAccept     = 3
 	ConnEventUDPSend       = 4
 	ConnEventUDPRecv       = 5
+	ConnEventTCPSend       = 6
+	ConnEventTCPRecv       = 7
+)
+
+const (
+	ByteDirectionNone = 0
+	ByteDirectionOut  = 1
+	ByteDirectionIn   = 2
 )
 
 // Protocol names - returns empty string for unknown protocols

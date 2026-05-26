@@ -26,6 +26,8 @@ var hostNetNSInt uint64
 
 const procPath = "/proc"
 const clientEventBufferSize = 100000
+const trafficFlushInterval = time.Second
+const trafficIdleTTL = 2 * time.Minute
 
 var buildSourceHash string
 
@@ -78,10 +80,45 @@ type listeningSocket struct {
 	Port uint16
 }
 
+type trafficKey struct {
+	Protocol   uint8
+	LocalIP    string
+	LocalPort  uint16
+	RemoteIP   string
+	RemotePort uint16
+}
+
+type trafficAggregate struct {
+	BytesIn    uint64
+	BytesOut   uint64
+	SamplesIn  uint64
+	SamplesOut uint64
+	LastSeen   time.Time
+}
+
+type trafficMetricKey struct {
+	Protocol  uint8
+	LocalIP   string
+	LocalPort uint16
+	RemoteIP  string
+}
+
+type trafficMetricCounters struct {
+	BytesIn  uint64
+	BytesOut uint64
+}
+
+type listeningPortKey struct {
+	Protocol uint8
+	IP       string
+	Port     uint16
+}
+
 type Server struct {
 	ctrdClient    *containerd.Client
 	tracer        *ebpf.Tracer
 	httpServer    *http.Server
+	metricsServer *http.Server
 	nodeName      string
 	hostIPs       []string
 	imageHash     string
@@ -104,6 +141,11 @@ type Server struct {
 	acceptMissingPID    *atomic.Uint64
 	clientDropCounter   *atomic.Uint64
 	metricsMu           sync.RWMutex
+
+	trafficMu         sync.Mutex
+	traffic           map[trafficKey]*trafficAggregate
+	trafficCounters   map[trafficMetricKey]*trafficMetricCounters
+	listeningTCPPorts map[listeningPortKey]struct{}
 }
 
 type Options struct {
@@ -111,6 +153,8 @@ type Options struct {
 	EnableContainerEvents   bool
 	EnableContainerMetainfo bool
 	EnableImageMetainfo     bool
+	EnableByteCountEvents   bool
+	EnableByteCountMetrics  bool
 	PodHTTPPort             string
 }
 
@@ -176,11 +220,20 @@ func NewServerWithOptions(ctrdClient *containerd.Client, tracer *ebpf.Tracer, fa
 		loopbackCounter:     &atomic.Uint64{},
 		acceptMissingPID:    &atomic.Uint64{},
 		clientDropCounter:   &atomic.Uint64{},
+		traffic:             make(map[trafficKey]*trafficAggregate),
+		trafficCounters:     make(map[trafficMetricKey]*trafficMetricCounters),
+		listeningTCPPorts:   make(map[listeningPortKey]struct{}),
 	}
 
 	go s.preloadContainers()
 	go s.processEBPFEvents()
+	if options.EnableByteCountEvents || options.EnableByteCountMetrics {
+		go s.processEBPFByteEvents()
+	}
 	go s.handleBroadcast()
+	if options.EnableByteCountEvents {
+		go s.flushTrafficSamples()
+	}
 
 	return s
 }
@@ -211,7 +264,6 @@ func (s *Server) singlePodHandler() http.Handler {
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/conntrack", s.handleWebSocket)
-	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	return mux
 }
@@ -223,6 +275,21 @@ func (s *Server) StartWithListener(listener net.Listener) error {
 
 	slog.Info("Starting single-pod HTTP server on listener", "addr", listener.Addr())
 	return s.httpServer.Serve(listener)
+}
+
+func (s *Server) metricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", s.handleMetrics)
+	return mux
+}
+
+func (s *Server) StartMetricsWithListener(listener net.Listener) error {
+	s.metricsServer = &http.Server{
+		Handler: s.metricsHandler(),
+	}
+
+	slog.Info("Starting metrics HTTP server on listener", "addr", listener.Addr())
+	return s.metricsServer.Serve(listener)
 }
 
 func (s *Server) muxHandler() http.Handler {
@@ -399,7 +466,16 @@ func familyToString(family uint16) string {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
+	var err error
+	if s.httpServer != nil {
+		err = s.httpServer.Shutdown(ctx)
+	}
+	if s.metricsServer != nil {
+		if metricsErr := s.metricsServer.Shutdown(ctx); metricsErr != nil && err == nil {
+			err = metricsErr
+		}
+	}
+	return err
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -717,6 +793,184 @@ func (s *Server) processEBPFEvents() {
 
 		s.handleConnectionEvent(event)
 	}
+}
+
+func (s *Server) processEBPFByteEvents() {
+	for event := range s.tracer.ByteEvents() {
+		localIP, remoteIP := event.LocalRemoteIPs()
+
+		slog.Debug("Received eBPF byte event",
+			"pid", event.PID,
+			"protocol", types.ProtocolNames[event.Protocol],
+			"family", familyToString(event.Family),
+			"sport", event.Sport,
+			"dport", event.Dport,
+			"src", localIP,
+			"dst", remoteIP,
+			"byteCount", event.ByteCount,
+			"byteDirection", event.ByteDirectionString(),
+		)
+
+		s.recordTrafficSample(event, localIP, remoteIP)
+	}
+}
+
+func (s *Server) rememberListeningTCPPort(ip string, port uint16) {
+	if port == 0 {
+		return
+	}
+
+	s.trafficMu.Lock()
+	s.listeningTCPPorts[listeningPortKey{Protocol: types.ProtocolTCP, IP: ip, Port: port}] = struct{}{}
+	s.trafficMu.Unlock()
+}
+
+func isWildcardListeningIP(ip string) bool {
+	return ip == "" || ip == "0.0.0.0" || ip == "::" || ip == "[::]"
+}
+
+func (s *Server) hasConfirmedListeningTCPPort(localIP string, localPort uint16) bool {
+	if localPort == 0 {
+		return false
+	}
+
+	s.trafficMu.Lock()
+	defer s.trafficMu.Unlock()
+
+	if _, ok := s.listeningTCPPorts[listeningPortKey{Protocol: types.ProtocolTCP, IP: localIP, Port: localPort}]; ok {
+		return true
+	}
+	for key := range s.listeningTCPPorts {
+		if key.Protocol == types.ProtocolTCP && key.Port == localPort && isWildcardListeningIP(key.IP) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) recordTrafficSample(event types.ByteEvent, localIP, remoteIP string) {
+	if localIP == "" || remoteIP == "" || event.Sport == 0 {
+		return
+	}
+	if isLoopbackIP(localIP) || isLoopbackIP(remoteIP) {
+		return
+	}
+
+	if event.Protocol == types.ProtocolTCP && !s.hasConfirmedListeningTCPPort(localIP, event.Sport) {
+		return
+	}
+
+	direction := event.ByteDirectionString()
+	if direction == "" {
+		return
+	}
+
+	key := trafficKey{
+		Protocol:   event.Protocol,
+		LocalIP:    localIP,
+		LocalPort:  event.Sport,
+		RemoteIP:   remoteIP,
+		RemotePort: event.Dport,
+	}
+	metricKey := trafficMetricKey{
+		Protocol:  event.Protocol,
+		LocalIP:   localIP,
+		LocalPort: event.Sport,
+		RemoteIP:  remoteIP,
+	}
+	now := time.Now()
+
+	s.trafficMu.Lock()
+	var agg *trafficAggregate
+	if s.options.EnableByteCountEvents {
+		agg = s.traffic[key]
+		if agg == nil {
+			agg = &trafficAggregate{}
+			s.traffic[key] = agg
+		}
+	}
+	var counters *trafficMetricCounters
+	if s.options.EnableByteCountMetrics {
+		counters = s.trafficCounters[metricKey]
+		if counters == nil {
+			counters = &trafficMetricCounters{}
+			s.trafficCounters[metricKey] = counters
+		}
+	}
+
+	if direction == "in" {
+		if agg != nil {
+			agg.BytesIn += event.ByteCount
+			agg.SamplesIn++
+		}
+		if counters != nil {
+			counters.BytesIn += event.ByteCount
+		}
+	} else {
+		if agg != nil {
+			agg.BytesOut += event.ByteCount
+			agg.SamplesOut++
+		}
+		if counters != nil {
+			counters.BytesOut += event.ByteCount
+		}
+	}
+	if agg != nil {
+		agg.LastSeen = now
+	}
+	s.trafficMu.Unlock()
+}
+
+func (s *Server) flushTrafficSamples() {
+	ticker := time.NewTicker(trafficFlushInterval)
+	defer ticker.Stop()
+
+	for now := range ticker.C {
+		samples := s.drainTrafficSamples(now)
+		for _, sample := range samples {
+			select {
+			case s.broadcast <- sample:
+			default:
+				slog.Warn("Broadcast channel full, dropping traffic.sample event")
+			}
+		}
+	}
+}
+
+func (s *Server) drainTrafficSamples(now time.Time) []*TrafficSampleEvent {
+	s.trafficMu.Lock()
+	defer s.trafficMu.Unlock()
+
+	samples := make([]*TrafficSampleEvent, 0, len(s.traffic))
+	for key, agg := range s.traffic {
+		if agg.BytesIn == 0 && agg.BytesOut == 0 {
+			if now.Sub(agg.LastSeen) > trafficIdleTTL {
+				delete(s.traffic, key)
+			}
+			continue
+		}
+
+		samples = append(samples, &TrafficSampleEvent{
+			EventType:  "traffic.sample",
+			Timestamp:  now.Format(time.RFC3339),
+			NodeName:   s.nodeName,
+			Protocol:   types.ProtocolNames[key.Protocol],
+			LocalIP:    key.LocalIP,
+			LocalPort:  key.LocalPort,
+			RemoteIP:   key.RemoteIP,
+			RemotePort: key.RemotePort,
+			BytesIn:    agg.BytesIn,
+			BytesOut:   agg.BytesOut,
+			SamplesIn:  agg.SamplesIn,
+			SamplesOut: agg.SamplesOut,
+		})
+
+		agg.BytesIn = 0
+		agg.BytesOut = 0
+		agg.SamplesIn = 0
+		agg.SamplesOut = 0
+	}
+	return samples
 }
 
 func (s *Server) incEventCounter(labels ...string) {
@@ -1322,6 +1576,9 @@ func (s *Server) broadcastListeningPort(port *PortListeningEvent, containerUID s
 	if isLoopbackIP(port.IP) {
 		return
 	}
+	if port.Protocol == types.ProtocolNames[types.ProtocolTCP] {
+		s.rememberListeningTCPPort(port.IP, port.Port)
+	}
 
 	// Don't include cgroupSlice in initial port events
 	// It will be updated from connection events later
@@ -1592,6 +1849,16 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	s.metricsMu.RUnlock()
 
+	trafficCounters := make(map[trafficMetricKey]trafficMetricCounters)
+	if s.options.EnableByteCountMetrics {
+		s.trafficMu.Lock()
+		trafficCounters = make(map[trafficMetricKey]trafficMetricCounters, len(s.trafficCounters))
+		for key, counters := range s.trafficCounters {
+			trafficCounters[key] = *counters
+		}
+		s.trafficMu.Unlock()
+	}
+
 	fmt.Fprintf(w, "netstatd_loopback_events_total %d\n", s.loopbackCounter.Load())
 	fmt.Fprintf(w, "netstatd_missing_pid_accept_events_total %d\n", s.acceptMissingPID.Load())
 	fmt.Fprintf(w, "netstatd_client_dropped_events_total %d\n", s.clientDropCounter.Load())
@@ -1632,6 +1899,19 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	for field, value := range resolutionFailures {
 		fmt.Fprintf(w, "netstatd_resolution_failures_total{field=\"%s\"} %d\n", field, value)
+	}
+
+	for key, counters := range trafficCounters {
+		protocol := types.ProtocolNames[key.Protocol]
+		labels := fmt.Sprintf(
+			`protocol="%s",local_ip="%s",local_port="%d",remote_ip="%s"`,
+			protocol,
+			key.LocalIP,
+			key.LocalPort,
+			key.RemoteIP,
+		)
+		fmt.Fprintf(w, "netstatd_traffic_bytes_in_total{%s} %d\n", labels, counters.BytesIn)
+		fmt.Fprintf(w, "netstatd_traffic_bytes_out_total{%s} %d\n", labels, counters.BytesOut)
 	}
 }
 
