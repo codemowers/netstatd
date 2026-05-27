@@ -96,7 +96,7 @@ function connect() {
   updateToggleButton();
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${protocol}//${window.location.host}/conntrack`;
+  const wsUrl = `${protocol}//${window.location.host}/conntrack${window.location.search || ""}`;
   try {
     window.ws = new WebSocket(wsUrl);
   } catch (err) {

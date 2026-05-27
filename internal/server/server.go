@@ -48,6 +48,7 @@ type clientWriter struct {
 	conn *websocket.Conn
 	ch   chan Event
 	done chan struct{}
+	sub  wsSubscription
 
 	// State tracking for this client
 	// These maps are only accessed from clientWriterLoop goroutine
@@ -73,6 +74,170 @@ func (j JSONEvent) Type() string {
 		return typ
 	}
 	return "unknown"
+}
+
+type wsSubscription struct {
+	nodes       map[string]struct{}
+	endpointIPs map[string]struct{}
+	match       string
+}
+
+func parseWSSubscription(r *http.Request) wsSubscription {
+	q := r.URL.Query()
+	sub := wsSubscription{
+		nodes:       parseStringSet(q["nodes"]),
+		endpointIPs: parseIPSet(q["endpointIPs"]),
+		match:       strings.ToLower(strings.TrimSpace(q.Get("match"))),
+	}
+	if sub.match == "" {
+		sub.match = "any"
+	}
+	if sub.match != "any" && sub.match != "local" && sub.match != "remote" {
+		sub.match = "any"
+	}
+	return sub
+}
+
+func parseStringSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out[part] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func parseIPSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			if ip := normalizeIP(part); ip != "" {
+				out[ip] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func normalizeIP(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	ip := net.ParseIP(value)
+	if ip == nil {
+		return value
+	}
+	return ip.String()
+}
+
+func (sub wsSubscription) matches(event Event) bool {
+	if event == nil {
+		return false
+	}
+	if len(sub.nodes) == 0 && len(sub.endpointIPs) == 0 {
+		return true
+	}
+
+	nodeName, hasNode := eventNodeName(event)
+	if len(sub.nodes) > 0 {
+		if !hasNode {
+			return false
+		}
+		if _, ok := sub.nodes[nodeName]; !ok {
+			return false
+		}
+	}
+
+	if len(sub.endpointIPs) == 0 {
+		return true
+	}
+
+	localIP, remoteIP, singleIP, hasEndpoint := eventEndpointIPs(event)
+	if !hasEndpoint {
+		return event.Type() == "host.info"
+	}
+
+	localMatch := sub.containsIP(localIP)
+	remoteMatch := sub.containsIP(remoteIP)
+	singleMatch := sub.containsIP(singleIP)
+
+	switch sub.match {
+	case "local":
+		return localMatch || singleMatch
+	case "remote":
+		return remoteMatch || singleMatch
+	default:
+		return localMatch || remoteMatch || singleMatch
+	}
+}
+
+func (sub wsSubscription) containsIP(value string) bool {
+	if value == "" {
+		return false
+	}
+	_, ok := sub.endpointIPs[normalizeIP(value)]
+	return ok
+}
+
+func eventNodeName(event Event) (string, bool) {
+	switch e := event.(type) {
+	case *ConnectionEvent:
+		return e.NodeName, e.NodeName != ""
+	case *ConnectionAcceptedEvent:
+		return e.NodeName, e.NodeName != ""
+	case *TrafficSampleEvent:
+		return e.NodeName, e.NodeName != ""
+	case *ContainerMetainfoEvent:
+		return e.NodeName, e.NodeName != ""
+	case *ImageMetainfoEvent:
+		return e.NodeName, e.NodeName != ""
+	case *ProcessMetainfoEvent:
+		return e.NodeName, e.NodeName != ""
+	case *HostInfoEvent:
+		return e.NodeName, e.NodeName != ""
+	case *ContainerAddedEvent:
+		return e.NodeName, e.NodeName != ""
+	case *PortListeningEvent:
+		return e.NodeName, e.NodeName != ""
+	case JSONEvent:
+		var m map[string]any
+		if err := json.Unmarshal(e.Data, &m); err != nil {
+			return "", false
+		}
+		node, ok := m["nodeName"].(string)
+		return node, ok && node != ""
+	default:
+		return "", false
+	}
+}
+
+func eventEndpointIPs(event Event) (localIP, remoteIP, singleIP string, ok bool) {
+	switch e := event.(type) {
+	case *ConnectionEvent:
+		return e.LocalIP, e.RemoteIP, "", e.LocalIP != "" || e.RemoteIP != ""
+	case *ConnectionAcceptedEvent:
+		return e.LocalIP, e.RemoteIP, "", e.LocalIP != "" || e.RemoteIP != ""
+	case *TrafficSampleEvent:
+		return e.LocalIP, e.RemoteIP, "", e.LocalIP != "" || e.RemoteIP != ""
+	case *PortListeningEvent:
+		return "", "", e.IP, e.IP != ""
+	case JSONEvent:
+		var m map[string]any
+		if err := json.Unmarshal(e.Data, &m); err != nil {
+			return "", "", "", false
+		}
+		local, _ := m["localIP"].(string)
+		remote, _ := m["remoteIP"].(string)
+		ip, _ := m["ip"].(string)
+		return local, remote, ip, local != "" || remote != "" || ip != ""
+	default:
+		return "", "", "", false
+	}
 }
 
 type listeningSocket struct {
@@ -527,7 +692,8 @@ func getHostIPs() ([]string, error) {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("New WebSocket connection request", "remote", r.RemoteAddr)
+	sub := parseWSSubscription(r)
+	slog.Debug("New WebSocket connection request", "remote", r.RemoteAddr, "match", sub.match)
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("WebSocket upgrade error", "error", err)
@@ -544,10 +710,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			HostNetNS: hostNetNSInt,
 			ImageHash: s.imageHash,
 		}
-		if err := conn.WriteJSON(hostInfoEvent); err != nil {
-			slog.Error("Failed to send host.info event", "error", err)
-			conn.Close()
-			return
+		if sub.matches(hostInfoEvent) {
+			if err := conn.WriteJSON(hostInfoEvent); err != nil {
+				slog.Error("Failed to send host.info event", "error", err)
+				conn.Close()
+				return
+			}
 		}
 	}
 
@@ -556,6 +724,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn:             conn,
 		ch:               make(chan Event, clientEventBufferSize),
 		done:             make(chan struct{}),
+		sub:              sub,
 		scannedNetNS:     make(map[uint64]bool),
 		broadcastedPorts: make(map[string]bool),
 		sentProcessPID:   make(map[uint32]bool),
@@ -661,12 +830,16 @@ func (s *Server) sendInitialState(conn *websocket.Conn, cw *clientWriter) {
 		for _, container := range containers {
 			if s.options.EnableContainerEvents {
 				event := s.containerToEvent(container)
+				if !cw.sub.matches(event) {
+					continue
+				}
 				if err := s.writeEventToClient(cw, event); err != nil {
 					slog.Debug("Failed to send initial container event", "remote", conn.RemoteAddr(), "error", err)
 					return
 				}
 			}
-			if !s.writeImageMetainfoForClient(cw, container) {
+			imageEvent := &ImageMetainfoEvent{EventType: "image.metainfo", NodeName: s.nodeName}
+			if cw.sub.matches(imageEvent) && !s.writeImageMetainfoForClient(cw, container) {
 				slog.Debug("Failed to send initial image.metainfo event", "remote", conn.RemoteAddr())
 				return
 			}
@@ -762,6 +935,9 @@ func (s *Server) sendListeningPortsToClient(conn *websocket.Conn, cw *clientWrit
 			portKey := fmt.Sprintf("%s:%s:%s:%d:%d",
 				wsEvent.NodeName, wsEvent.Protocol, wsEvent.IP, wsEvent.Port, wsEvent.NetNS)
 			if cw.broadcastedPorts[portKey] {
+				continue
+			}
+			if !cw.sub.matches(wsEvent) {
 				continue
 			}
 			if err := s.writeEventToClient(cw, wsEvent); err != nil {
@@ -1640,6 +1816,9 @@ func (s *Server) clientWriterLoop(cw *clientWriter) {
 			if event == nil {
 				continue
 			}
+			if _, ok := event.(*initialStateMarker); !ok && !cw.sub.matches(event) {
+				continue
+			}
 			// Handle different event types using type switch
 			switch e := event.(type) {
 			case *ConnectionEvent:
@@ -1916,7 +2095,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFanoutWebSocket(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("New fanout WebSocket connection request", "remote", r.RemoteAddr)
+	sub := parseWSSubscription(r)
+	slog.Debug("New fanout WebSocket connection request", "remote", r.RemoteAddr, "match", sub.match)
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("WebSocket upgrade error", "error", err)
@@ -1953,7 +2133,7 @@ func (s *Server) handleFanoutWebSocket(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			s.connectToPod(podCtx, ip, s.options.PodHTTPPort, aggregatedEvents)
+			s.connectToPod(podCtx, ip, s.options.PodHTTPPort, r.URL.RawQuery, aggregatedEvents)
 		}(podIP)
 	}
 
@@ -2002,6 +2182,9 @@ func (s *Server) handleFanoutWebSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		for event := range aggregatedEvents {
 			if s.shouldOmitMetadataEvent(event) {
+				continue
+			}
+			if !sub.matches(event) {
 				continue
 			}
 
@@ -2074,10 +2257,10 @@ func fanoutReconnectDelay(failures int) time.Duration {
 	return delay
 }
 
-func (s *Server) connectToPod(ctx context.Context, podIP string, port string, events chan<- Event) {
+func (s *Server) connectToPod(ctx context.Context, podIP string, port string, rawQuery string, events chan<- Event) {
 	failures := 0
 	for {
-		connected, err := s.streamPodEvents(ctx, podIP, port, events)
+		connected, err := s.streamPodEvents(ctx, podIP, port, rawQuery, events)
 		if ctx.Err() != nil {
 			return
 		}
@@ -2106,12 +2289,15 @@ func (s *Server) connectToPod(ctx context.Context, podIP string, port string, ev
 	}
 }
 
-func (s *Server) streamPodEvents(ctx context.Context, podIP string, port string, events chan<- Event) (bool, error) {
+func (s *Server) streamPodEvents(ctx context.Context, podIP string, port string, rawQuery string, events chan<- Event) (bool, error) {
 	host := podIP
 	if net.ParseIP(podIP).To4() == nil {
 		host = fmt.Sprintf("[%s]", podIP)
 	}
 	wsURL := fmt.Sprintf("ws://%s:%s/conntrack", host, port)
+	if rawQuery != "" {
+		wsURL += "?" + rawQuery
+	}
 
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, _, err := dialer.Dial(wsURL, nil)

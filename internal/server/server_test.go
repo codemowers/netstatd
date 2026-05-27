@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,86 @@ func TestParseProcessNameFromStatus(t *testing.T) {
 				t.Fatalf("parseProcessNameFromStatus() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseWSSubscriptionDefaultsToAny(t *testing.T) {
+	req, err := http.NewRequest("GET", "/conntrack?endpointIPs=10.0.0.1", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+
+	sub := parseWSSubscription(req)
+	if sub.match != "any" {
+		t.Fatalf("match = %q, want any", sub.match)
+	}
+	if !sub.matches(&ConnectionEvent{
+		EventType: "connection.event",
+		NodeName:  "node-a",
+		LocalIP:   "10.0.0.2",
+		RemoteIP:  "10.0.0.1",
+	}) {
+		t.Fatal("default subscription did not match remote endpoint IP")
+	}
+}
+
+func TestWSSubscriptionMatchLocalAndRemote(t *testing.T) {
+	req, err := http.NewRequest("GET", "/conntrack?endpointIPs=10.0.0.1&match=local", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+
+	sub := parseWSSubscription(req)
+	if !sub.matches(&ConnectionEvent{EventType: "connection.event", LocalIP: "10.0.0.1", RemoteIP: "10.0.0.2"}) {
+		t.Fatal("local subscription did not match local endpoint IP")
+	}
+	if sub.matches(&ConnectionEvent{EventType: "connection.event", LocalIP: "10.0.0.2", RemoteIP: "10.0.0.1"}) {
+		t.Fatal("local subscription matched remote endpoint IP")
+	}
+
+	req, err = http.NewRequest("GET", "/conntrack?endpointIPs=10.0.0.1&match=remote", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	sub = parseWSSubscription(req)
+	if !sub.matches(&ConnectionEvent{EventType: "connection.event", LocalIP: "10.0.0.2", RemoteIP: "10.0.0.1"}) {
+		t.Fatal("remote subscription did not match remote endpoint IP")
+	}
+	if sub.matches(&ConnectionEvent{EventType: "connection.event", LocalIP: "10.0.0.1", RemoteIP: "10.0.0.2"}) {
+		t.Fatal("remote subscription matched local endpoint IP")
+	}
+}
+
+func TestWSSubscriptionFiltersByNodeAndEndpoint(t *testing.T) {
+	req, err := http.NewRequest("GET", "/conntrack?nodes=node-a,node-b&endpointIPs=10.0.0.1", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+
+	sub := parseWSSubscription(req)
+	if !sub.matches(&ConnectionEvent{EventType: "connection.event", NodeName: "node-a", LocalIP: "10.0.0.1"}) {
+		t.Fatal("subscription did not match selected node and endpoint")
+	}
+	if sub.matches(&ConnectionEvent{EventType: "connection.event", NodeName: "node-c", LocalIP: "10.0.0.1"}) {
+		t.Fatal("subscription matched unselected node")
+	}
+	if sub.matches(&ConnectionEvent{EventType: "connection.event", NodeName: "node-a", LocalIP: "10.0.0.2"}) {
+		t.Fatal("subscription matched unselected endpoint")
+	}
+}
+
+func TestWSSubscriptionMatchesJSONEvents(t *testing.T) {
+	req, err := http.NewRequest("GET", "/conntrack?endpointIPs=10.0.0.1", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+
+	sub := parseWSSubscription(req)
+	if !sub.matches(JSONEvent{Data: []byte(`{"type":"connection.event","nodeName":"node-a","localIP":"10.0.0.2","remoteIP":"10.0.0.1"}`)}) {
+		t.Fatal("subscription did not match JSON remote endpoint IP")
+	}
+	if !sub.matches(JSONEvent{Data: []byte(`{"type":"port.listening","nodeName":"node-a","ip":"10.0.0.1"}`)}) {
+		t.Fatal("subscription did not match JSON single endpoint IP")
 	}
 }
 
